@@ -244,8 +244,8 @@ def run_scan(bot, chat_id, niche, city):
             description = business.get("description", "") or "None"
             place_id = business.get("place_id", "")
             maps_link = (
-                f"https://www.google.com/maps/place/?q=place_id:{place_id}"
-                if place_id else "N/A"
+    f"https://www.google.com/maps?cid={place_id}"
+    if place_id else "N/A"
             )
 
             score, weaknesses, reviews, rating = score_business(business)
