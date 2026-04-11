@@ -71,19 +71,21 @@ def log_to_sheet(data):
 def search_maps(niche, city, limit=20):
     global credits_used
     try:
-        url = "https://api.scrapingdog.com/google_maps"
+        url = "https://api.scrapingdog.com/google_local/"
         params = {
             "api_key": SCRAPINGDOG_API_KEY,
-            "query": f"{niche} in {city}",
-            "results": limit
+            "query": f"{niche}+in+{city}",
         }
         response = requests.get(url, params=params, timeout=30)
         if response.status_code == 200:
             credits_used += 1
             data = response.json()
-            return data.get("local_results", [])
+            results = data.get("local_results", [])
+            logger.info(f"Found {len(results)} businesses")
+            return results[:limit]
         else:
-            logger.error(f"ScrapingDog error: {response.text}")
+            logger.error(
+                f"ScrapingDog error {response.status_code}: {response.text}")
             return []
     except Exception as e:
         logger.error(f"Maps search error: {e}")
@@ -96,7 +98,7 @@ def score_business(business):
     weaknesses = []
 
     # No website
-    website = business.get("website", "")
+    website = business.get("website", "") or ""
     if not website:
         score += 2
         weaknesses.append("No website listed")
@@ -104,7 +106,7 @@ def score_business(business):
     # Low reviews
     reviews = business.get("reviews", 0)
     try:
-        reviews = int(reviews)
+        reviews = int(str(reviews).replace(",", ""))
     except:
         reviews = 0
     if reviews < 10:
@@ -128,7 +130,7 @@ def score_business(business):
         weaknesses.append("No rating yet")
 
     # No phone
-    phone = business.get("phone", "")
+    phone = business.get("phone", "") or ""
     if not phone:
         score += 1
         weaknesses.append("No phone listed")
@@ -175,7 +177,7 @@ Write ONLY the audit. Nothing else."""
         return response.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"Groq audit error: {e}")
-        return f"{business_name} has several visibility issues that are likely costing them customers daily."
+        return f"{business_name} has visibility issues that are costing them customers daily."
 
 
 def generate_pitch(business_name, niche, city, weaknesses):
@@ -218,7 +220,7 @@ def run_scan(bot, chat_id, niche, city):
 
     if not businesses:
         send_telegram(bot, chat_id,
-                      f"No results found for {niche} in {city}. Try different keywords.")
+                      f"No results found for {niche} in {city}.\nTry different keywords like:\n/scan restaurant lagos\n/scan salon abuja\n/scan hotel ibadan")
         return
 
     weak_found = 0
@@ -228,11 +230,12 @@ def run_scan(bot, chat_id, niche, city):
         try:
             name = business.get("title", "Unknown")
             address = business.get("address", "N/A")
-            phone = business.get("phone", "N/A")
+            phone = business.get("phone", "") or "N/A"
             rating = business.get("rating", "N/A")
             reviews = business.get("reviews", 0)
-            website = business.get("website", "None")
-            maps_link = business.get("link", "N/A")
+            website = business.get("website", "") or "None"
+            maps_link = business.get(
+                "maps_url", "") or business.get("link", "N/A")
 
             score, weaknesses = score_business(business)
 
@@ -246,6 +249,7 @@ def run_scan(bot, chat_id, niche, city):
 
             weakness_text = "\n".join([f"• {w}" for w in weaknesses])
 
+            # Message 1 - Full business details
             msg = (
                 f"WEAK BUSINESS #{weak_found}\n"
                 f"Score: {score}/10\n\n"
@@ -263,6 +267,7 @@ def run_scan(bot, chat_id, niche, city):
 
             time.sleep(2)
 
+            # Message 2 - Pitch only, easy to copy
             pitch_msg = (
                 f"WHATSAPP PITCH:\n\n"
                 f"{pitch}"
@@ -373,7 +378,6 @@ def cmd_schedule(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
 
     scheduled_scans.append({"niche": niche, "city": city})
-
     schedule.every().day.at("08:00").do(
         run_scan, bot, chat_id, niche, city)
 
@@ -415,7 +419,7 @@ def cmd_export(update: Update, context: CallbackContext):
     if update.effective_user.id != TELEGRAM_USER_ID:
         return
     update.message.reply_text(
-        "Check your Google Sheet for all logged leads.\n"
+        f"Check your Google Sheet for all logged leads.\n"
         f"Total credits used today: {credits_used}"
     )
 
@@ -449,15 +453,17 @@ def main():
     updater.start_polling()
     logger.info("Bot is running!")
 
-    send_msg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    requests.post(send_msg_url, json={
-        "chat_id": TELEGRAM_USER_ID,
-        "text": (
-            "MAPS LEAD BOT IS LIVE\n\n"
-            "Send /start to see all commands\n"
-            "Send /scan restaurants lagos to begin"
-        )
-    })
+    requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+        json={
+            "chat_id": TELEGRAM_USER_ID,
+            "text": (
+                "MAPS LEAD BOT IS LIVE\n\n"
+                "Send /start to see all commands\n"
+                "Send /scan restaurants lagos to begin"
+            )
+        }
+    )
 
     updater.idle()
 
