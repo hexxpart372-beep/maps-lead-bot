@@ -28,7 +28,7 @@ SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 # ─── Settings ────────────────────────────────────────────
-MIN_SCORE = 5
+MIN_SCORE = 3
 scheduled_scans = []
 credits_used = 0
 
@@ -108,9 +108,9 @@ def search_maps(niche, city, country_code="ng"):
 # ─── Weakness Scoring ────────────────────────────────────
 def score_business(business):
     score = 0
-    weaknesses = []
+    issues = []
 
-    # Parse reviews
+    # ── Reviews ──────────────────────────────────────────
     reviews_raw = business.get("reviews", "0")
     try:
         reviews = int(
@@ -123,124 +123,75 @@ def score_business(business):
     except:
         reviews = 0
 
-    # Parse rating
-    rating_raw = business.get("rating", 0)
-    try:
-        rating = float(rating_raw)
-    except:
-        rating = 0
-
-    # Reviews scoring
+    # Only flag genuinely low review counts
     if reviews == 0:
-        score += 4
-        weaknesses.append("No reviews on profile")
-    elif reviews < 20:
-        score += 3
-        weaknesses.append(f"Only {reviews} reviews")
-    elif reviews < 50:
         score += 2
-        weaknesses.append(f"Low profile activity: {reviews} reviews")
-    elif reviews < 100:
-        score += 1
-        weaknesses.append(f"Profile needs more activity")
+        issues.append(f"0 reviews on profile")
+    elif reviews <= 25:
+        score += 2
+        issues.append(f"Only {reviews} reviews")
 
-    # Rating scoring
-    if rating == 0:
+    # ── Website ──────────────────────────────────────────
+    website = business.get("website", "") or ""
+    if not website:
         score += 2
-        weaknesses.append("No rating on profile")
-    elif rating < 3.0:
-        score += 3
-        weaknesses.append(f"Very low rating: {rating}")
-    elif rating < 4.0:
-        score += 2
-        weaknesses.append(f"Below average rating: {rating}")
-    elif rating < 4.5:
-        score += 1
-        weaknesses.append(f"Rating could be stronger: {rating}")
+        issues.append("No website linked")
 
-    # No description
+    # ── Description ──────────────────────────────────────
     description = business.get("description", "") or ""
-    if not description:
-        score += 2
-        weaknesses.append("No business description on profile")
+    if not description or len(description) < 20:
+        score += 1
+        issues.append("Empty or generic description")
 
-    if not weaknesses:
-        weaknesses.append("Profile incomplete")
+    # ── Photos ───────────────────────────────────────────
+    # ScrapingDog doesnt return photo count directly
+    # We infer from thumbnail presence
+    thumbnail = business.get("thumbnail", "") or ""
+    if not thumbnail:
+        score += 1
+        issues.append("No photos on profile")
 
-    return score, weaknesses, reviews, rating
+    return score, issues, reviews
 
 
-# ─── Groq AI Audit ───────────────────────────────────────
-def generate_audit(business_name, niche, city, weaknesses):
+# ─── Generate Pitch ──────────────────────────────────────
+def generate_pitch(business_name, niche, city, issues):
     try:
-        weakness_text = "\n".join([f"- {w}" for w in weaknesses])
-        prompt = f"""You are a local business profile optimization expert.
+        issues_text = "\n".join([f"- {i}" for i in issues])
+        prompt = f"""Write a short WhatsApp outreach message to a {niche} business owner.
 
-Business: {business_name}
-Type: {niche}
-Location: {city}
-Issues found:
-{weakness_text}
-
-Write a 2-3 sentence audit that focuses ONLY on:
-- Missing website
-- Incomplete Google Maps profile
-- Poor or missing business description
-- No professional branding or online presence
-
-Do NOT mention reviews, marketing, advertising or getting more customers.
-Sound urgent but professional.
-Be specific to this business.
-
-Write ONLY the audit. Nothing else."""
-
-        response = groq_client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=120,
-            temperature=0.7,
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        logger.error(f"Groq audit error: {e}")
-        return (
-            f"{business_name} has an incomplete online profile that makes it "
-            f"hard for potential customers to find and trust them."
-        )
-
-
-def generate_pitch(business_name, niche, city, weaknesses):
-    try:
-        weakness_text = weaknesses[0] if weaknesses else "incomplete profile"
-        prompt = f"""Write a short WhatsApp message to a {niche} business owner in {city}.
-
-Their main issue: {weakness_text}
 Business name: {business_name}
+City: {city}
+Their specific issues:
+{issues_text}
 
-Offer to fix their online presence specifically:
-website setup, Google Maps profile completion, or business description.
+Rules:
+- Start with: Hi, I found your business while searching on Google Maps.
+- Mention 1-2 of their specific issues naturally
+- Offer to fix their online profile (website, Maps listing, description)
+- End with: Can I show you what I mean?
+- Under 60 words total
+- Sound helpful and human
+- Do NOT mention reviews, marketing, advertising or SEO
 
-Do NOT mention reviews, marketing, advertising or getting more customers.
-Be friendly and professional.
-End with a question.
-Under 50 words.
-Sound like a real helpful person.
-
-Write ONLY the message. Nothing else."""
+Write ONLY the message. No quotes around it."""
 
         response = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=100,
-            temperature=0.7,
+            temperature=0.6,
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"Groq pitch error: {e}")
+        issue_hint = issues[0] if issues else "incomplete profile"
         return (
-            f"Hi, I came across {business_name} on Google Maps and noticed "
-            f"your online profile is incomplete. I help businesses fix this "
-            f"quickly. Would you be interested?"
+            f"Hi, I found your business while searching on Google Maps.\n"
+            f"I noticed your profile has {issue_hint}, which usually reduces "
+            f"how many customers choose you.\n"
+            f"I help businesses quickly fix this so they get more visibility on Maps.\n"
+            f"Can I show you what I mean?"
         )
 
 
@@ -260,8 +211,8 @@ def run_scan(bot, chat_id, niche, city, country_code="ng"):
             f"No results found for {niche} in {city}.\n\n"
             f"Try:\n"
             f"/scan salon lagos\n"
-            f"/scan pharmacy abuja\n"
-            f"/scan hotel ibadan"
+            f"/scan barber houston\n"
+            f"/scan pharmacy abuja"
         )
         return
 
@@ -272,37 +223,32 @@ def run_scan(bot, chat_id, niche, city, country_code="ng"):
         try:
             name = business.get("title", "Unknown")
             address = business.get("address", "N/A")
-            description = business.get("description", "") or "None"
             place_id = business.get("place_id", "")
             maps_link = (
                 f"https://www.google.com/maps?cid={place_id}"
                 if place_id else "N/A"
             )
+            website = business.get("website", "") or "None"
+            phone = business.get("phone", "") or "Check Maps"
 
-            score, weaknesses, reviews, rating = score_business(business)
+            score, issues, reviews = score_business(business)
 
             if score < MIN_SCORE:
                 continue
 
             weak_found += 1
 
-            audit = generate_audit(name, niche, city, weaknesses)
-            pitch = generate_pitch(name, niche, city, weaknesses)
+            pitch = generate_pitch(name, niche, city, issues)
+            issues_text = "\n".join([f"• {i}" for i in issues])
 
-            weakness_text = "\n".join([f"• {w}" for w in weaknesses])
-
-            # Message 1 — Business details
+            # Message 1 — Clean fast lead card
             msg = (
-                f"WEAK PROFILE #{weak_found}\n"
-                f"Score: {score}/10\n\n"
+                f"TARGET #{weak_found}\n\n"
                 f"Name: {name}\n"
-                f"Type: {niche}\n"
-                f"Rating: {rating} ({reviews} reviews)\n"
-                f"Description: {description[:100]}\n"
-                f"Address: {address}\n\n"
-                f"Profile Issues:\n{weakness_text}\n\n"
-                f"AI AUDIT:\n{audit}\n\n"
-                f"Maps Link:\n{maps_link}"
+                f"Phone: {phone}\n"
+                f"Address: {address}\n"
+                f"Maps: {maps_link}\n\n"
+                f"Issues found:\n{issues_text}"
             )
             send_telegram(bot, chat_id, msg)
 
@@ -310,7 +256,7 @@ def run_scan(bot, chat_id, niche, city, country_code="ng"):
 
             # Message 2 — Pitch only easy to copy
             pitch_msg = (
-                f"WHATSAPP PITCH:\n\n"
+                f"COPY THIS PITCH:\n\n"
                 f"{pitch}"
             )
             send_telegram(bot, chat_id, pitch_msg)
@@ -318,8 +264,9 @@ def run_scan(bot, chat_id, niche, city, country_code="ng"):
             now = datetime.now().strftime("%Y-%m-%d %H:%M")
             log_to_sheet([
                 now, name, niche, city,
-                str(score), str(reviews), str(rating),
-                address, maps_link, "Pending"
+                str(score), str(reviews),
+                phone, website, address,
+                maps_link, "Pending"
             ])
 
             time.sleep(5)
@@ -331,8 +278,8 @@ def run_scan(bot, chat_id, niche, city, country_code="ng"):
     summary = (
         f"SCAN COMPLETE\n"
         f"Niche: {niche} in {city}\n"
-        f"Total found: {total}\n"
-        f"Weak profiles (score {MIN_SCORE}+): {weak_found}\n"
+        f"Total scanned: {total}\n"
+        f"Weak targets: {weak_found}\n"
         f"Credits used today: {credits_used}/1000"
     )
     send_telegram(bot, chat_id, summary)
@@ -346,11 +293,10 @@ def cmd_start(update: Update, context: CallbackContext):
         "MAPS LEAD BOT READY\n\n"
         "Commands:\n\n"
         "/scan [niche] [city]\n"
-        "  Nigeria: /scan restaurant lagos\n"
-        "  Abroad: /scan barbershop houston\n\n"
+        "  Nigeria: /scan salon lagos\n"
+        "  Abroad: /scan barber houston\n\n"
         "/setscore [number]\n"
-        "  Set minimum weakness score\n"
-        "  Default: 5. Lower = more results\n\n"
+        "  Min weakness score. Default: 3\n\n"
         "/schedule [niche] [city]\n"
         "  Auto scan every morning 8am\n\n"
         "/schedules\n"
@@ -370,8 +316,8 @@ def cmd_scan(update: Update, context: CallbackContext):
     if len(args) < 2:
         update.message.reply_text(
             "Usage: /scan [niche] [city]\n"
-            "Example: /scan restaurant lagos\n"
-            "Example: /scan barbershop houston"
+            "Example: /scan salon lagos\n"
+            "Example: /scan barber houston"
         )
         return
 
@@ -396,9 +342,9 @@ def cmd_setscore(update: Update, context: CallbackContext):
     if not args:
         update.message.reply_text(
             f"Current minimum score: {MIN_SCORE}\n"
-            f"Usage: /setscore 4\n"
+            f"Usage: /setscore 3\n"
             f"Lower = more results\n"
-            f"Higher = only weakest profiles"
+            f"Higher = only weakest targets"
         )
         return
     try:
@@ -408,7 +354,7 @@ def cmd_setscore(update: Update, context: CallbackContext):
         )
     except:
         update.message.reply_text(
-            "Enter a valid number. Example: /setscore 4"
+            "Enter a valid number. Example: /setscore 3"
         )
 
 
@@ -419,7 +365,7 @@ def cmd_schedule(update: Update, context: CallbackContext):
     if len(args) < 2:
         update.message.reply_text(
             "Usage: /schedule [niche] [city]\n"
-            "Example: /schedule restaurant lagos"
+            "Example: /schedule salon lagos"
         )
         return
 
@@ -442,8 +388,7 @@ def cmd_schedule(update: Update, context: CallbackContext):
         f"Scheduled daily scan set\n\n"
         f"Niche: {niche}\n"
         f"City: {city}\n"
-        f"Time: Every morning 8:00 AM\n\n"
-        f"Bot sends leads automatically."
+        f"Time: Every morning 8:00 AM"
     )
 
 
@@ -453,7 +398,7 @@ def cmd_schedules(update: Update, context: CallbackContext):
     if not scheduled_scans:
         update.message.reply_text(
             "No scheduled scans yet.\n"
-            "Use /schedule restaurant lagos to set one."
+            "Use /schedule salon lagos to set one."
         )
         return
     msg = "SCHEDULED SCANS:\n\n"
@@ -524,9 +469,9 @@ def main():
                 "MAPS LEAD BOT IS LIVE\n\n"
                 "Send /start to see commands\n\n"
                 "Try:\n"
-                "/scan restaurant lagos\n"
-                "/scan salon abuja\n"
-                "/scan pharmacy ibadan"
+                "/scan salon lagos\n"
+                "/scan barber houston\n"
+                "/scan pharmacy abuja"
             )
         }
     )
