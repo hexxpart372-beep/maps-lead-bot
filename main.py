@@ -28,7 +28,7 @@ SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 # ─── Settings ────────────────────────────────────────────
-MIN_SCORE = 7
+MIN_SCORE = 5
 scheduled_scans = []
 credits_used = 0
 
@@ -68,27 +68,28 @@ def log_to_sheet(data):
 
 
 # ─── ScrapingDog Maps Search ─────────────────────────────
-def search_maps(niche, city, limit=20):
+def search_maps(niche, city, country_code="ng"):
     global credits_used
     try:
         url = "https://api.scrapingdog.com/google_local/"
         params = {
             "api_key": SCRAPINGDOG_API_KEY,
             "query": f"{niche}+in+{city}",
-            "country": "ng",
-            "location": f"{city}, Nigeria",
+            "country": country_code,
             "language": "en"
         }
+        if country_code == "ng":
+            params["location"] = f"{city}, Nigeria"
+
         response = requests.get(url, params=params, timeout=30)
         if response.status_code == 200:
             credits_used += 1
             data = response.json()
             results = data.get("local_results", [])
-            logger.info(f"Found {len(results)} businesses")
-            return results[:limit]
+            logger.info(f"Found {len(results)} businesses for {niche} in {city}")
+            return results
         else:
-            logger.error(
-                f"ScrapingDog error {response.status_code}: {response.text}")
+            logger.error(f"ScrapingDog error {response.status_code}: {response.text}")
             return []
     except Exception as e:
         logger.error(f"Maps search error: {e}")
@@ -100,7 +101,7 @@ def score_business(business):
     score = 0
     weaknesses = []
 
-    # Parse reviews correctly
+    # Parse reviews
     reviews_raw = business.get("reviews", "0")
     try:
         reviews = int(
@@ -120,24 +121,33 @@ def score_business(business):
     except:
         rating = 0
 
-    # Score based on reviews
+    # Reviews scoring
     if reviews == 0:
-        score += 3
-        weaknesses.append("No reviews yet")
-    elif reviews < 10:
+        score += 4
+        weaknesses.append("No reviews at all")
+    elif reviews < 20:
         score += 3
         weaknesses.append(f"Only {reviews} reviews")
-    elif reviews < 30:
+    elif reviews < 50:
         score += 2
-        weaknesses.append(f"Only {reviews} reviews")
-
-    # Score based on rating
-    if rating == 0:
+        weaknesses.append(f"Low review count: {reviews}")
+    elif reviews < 100:
         score += 1
-        weaknesses.append("No rating yet")
-    elif rating < 3.5:
+        weaknesses.append(f"Under 100 reviews: {reviews}")
+
+    # Rating scoring
+    if rating == 0:
         score += 2
-        weaknesses.append(f"Low rating: {rating}")
+        weaknesses.append("No rating yet")
+    elif rating < 3.0:
+        score += 3
+        weaknesses.append(f"Very low rating: {rating}")
+    elif rating < 4.0:
+        score += 2
+        weaknesses.append(f"Below average rating: {rating}")
+    elif rating < 4.5:
+        score += 1
+        weaknesses.append(f"Rating could be better: {rating}")
 
     # No description
     description = business.get("description", "") or ""
@@ -145,11 +155,8 @@ def score_business(business):
         score += 2
         weaknesses.append("No business description")
 
-    # Price not listed (often means incomplete profile)
-    price = business.get("price", "") or ""
-    if not price:
-        score += 1
-        weaknesses.append("Incomplete profile")
+    if not weaknesses:
+        weaknesses.append("Listing needs improvement")
 
     return score, weaknesses, reviews, rating
 
@@ -217,20 +224,23 @@ Write ONLY the message. Nothing else."""
 
 
 # ─── Core Scan Function ──────────────────────────────────
-def run_scan(bot, chat_id, niche, city):
+def run_scan(bot, chat_id, niche, city, country_code="ng"):
     global MIN_SCORE
     send_telegram(
         bot, chat_id,
         f"Scanning {niche} in {city}...\nThis takes 1-2 minutes."
     )
 
-    businesses = search_maps(niche, city)
+    businesses = search_maps(niche, city, country_code)
 
     if not businesses:
         send_telegram(
             bot, chat_id,
-            f"No results found for {niche} in {city}.\n"
-            f"Try:\n/scan salon lagos\n/scan hotel abuja\n/scan pharmacy ibadan"
+            f"No results found for {niche} in {city}.\n\n"
+            f"Try these formats:\n"
+            f"/scan salon lagos\n"
+            f"/scan pharmacy abuja\n"
+            f"/scan hotel ibadan"
         )
         return
 
@@ -244,8 +254,8 @@ def run_scan(bot, chat_id, niche, city):
             description = business.get("description", "") or "None"
             place_id = business.get("place_id", "")
             maps_link = (
-    f"https://www.google.com/maps?cid={place_id}"
-    if place_id else "N/A"
+                f"https://www.google.com/maps?cid={place_id}"
+                if place_id else "N/A"
             )
 
             score, weaknesses, reviews, rating = score_business(business)
@@ -260,14 +270,14 @@ def run_scan(bot, chat_id, niche, city):
 
             weakness_text = "\n".join([f"• {w}" for w in weaknesses])
 
-            # Message 1 - Full business details
+            # Message 1 — Business details
             msg = (
                 f"WEAK BUSINESS #{weak_found}\n"
                 f"Score: {score}/10\n\n"
                 f"Name: {name}\n"
                 f"Type: {niche}\n"
                 f"Rating: {rating} ({reviews} reviews)\n"
-                f"Description: {description[:80]}\n"
+                f"Description: {description[:100]}\n"
                 f"Address: {address}\n\n"
                 f"Weaknesses:\n{weakness_text}\n\n"
                 f"AI AUDIT:\n{audit}\n\n"
@@ -277,7 +287,7 @@ def run_scan(bot, chat_id, niche, city):
 
             time.sleep(2)
 
-            # Message 2 - Pitch only easy to copy
+            # Message 2 — Pitch only easy to copy
             pitch_msg = (
                 f"WHATSAPP PITCH:\n\n"
                 f"{pitch}"
@@ -300,7 +310,7 @@ def run_scan(bot, chat_id, niche, city):
     summary = (
         f"SCAN COMPLETE\n"
         f"Niche: {niche} in {city}\n"
-        f"Total businesses found: {total}\n"
+        f"Total found: {total}\n"
         f"Weak businesses (score {MIN_SCORE}+): {weak_found}\n"
         f"Credits used today: {credits_used}/1000"
     )
@@ -315,18 +325,19 @@ def cmd_start(update: Update, context: CallbackContext):
         "MAPS LEAD BOT READY\n\n"
         "Commands:\n\n"
         "/scan [niche] [city]\n"
-        "  Example: /scan restaurant lagos\n\n"
+        "  Nigeria: /scan restaurant lagos\n"
+        "  Abroad: /scan restaurant texas\n\n"
         "/setscore [number]\n"
         "  Set minimum weakness score\n"
-        "  Default: 7. Lower = more results\n\n"
+        "  Default: 5. Lower = more results\n\n"
         "/schedule [niche] [city]\n"
-        "  Auto scan every morning at 8am\n\n"
+        "  Auto scan every morning 8am\n\n"
         "/schedules\n"
-        "  View all scheduled scans\n\n"
+        "  View scheduled scans\n\n"
         "/status\n"
-        "  Credits used and bot info\n\n"
+        "  Credits and bot info\n\n"
         "/export\n"
-        "  Reminder to check Google Sheet"
+        "  Check Google Sheet for all leads"
     )
     update.message.reply_text(msg)
 
@@ -338,17 +349,27 @@ def cmd_scan(update: Update, context: CallbackContext):
     if len(args) < 2:
         update.message.reply_text(
             "Usage: /scan [niche] [city]\n"
-            "Example: /scan restaurant lagos"
+            "Example: /scan restaurant lagos\n"
+            "Example: /scan barbershop houston"
         )
         return
+
     niche = args[0]
     city = " ".join(args[1:])
     bot = context.bot
     chat_id = update.effective_chat.id
 
+    # Detect country from city name
+    nigeria_cities = [
+        "lagos", "abuja", "ibadan", "kano", "port harcourt",
+        "benin", "enugu", "kaduna", "owerri", "warri",
+        "calabar", "jos", "ilorin", "abeokuta", "onitsha"
+    ]
+    country_code = "ng" if city.lower() in nigeria_cities else "us"
+
     thread = threading.Thread(
         target=run_scan,
-        args=(bot, chat_id, niche, city)
+        args=(bot, chat_id, niche, city, country_code)
     )
     thread.start()
 
@@ -361,19 +382,20 @@ def cmd_setscore(update: Update, context: CallbackContext):
     if not args:
         update.message.reply_text(
             f"Current minimum score: {MIN_SCORE}\n"
-            f"Usage: /setscore 6\n"
-            f"Lower number = more results\n"
-            f"Higher number = stricter filtering"
+            f"Usage: /setscore 4\n"
+            f"Lower = more results shown\n"
+            f"Higher = only weakest businesses"
         )
         return
     try:
         MIN_SCORE = int(args[0])
         update.message.reply_text(
-            f"Minimum score updated to {MIN_SCORE}/10\n"
-            f"Next scan will use this threshold."
+            f"Minimum score updated to {MIN_SCORE}/10"
         )
     except:
-        update.message.reply_text("Please enter a valid number. Example: /setscore 6")
+        update.message.reply_text(
+            "Enter a valid number. Example: /setscore 4"
+        )
 
 
 def cmd_schedule(update: Update, context: CallbackContext):
@@ -391,16 +413,28 @@ def cmd_schedule(update: Update, context: CallbackContext):
     bot = context.bot
     chat_id = update.effective_chat.id
 
-    scheduled_scans.append({"niche": niche, "city": city})
+    nigeria_cities = [
+        "lagos", "abuja", "ibadan", "kano", "port harcourt",
+        "benin", "enugu", "kaduna", "owerri", "warri",
+        "calabar", "jos", "ilorin", "abeokuta", "onitsha"
+    ]
+    country_code = "ng" if city.lower() in nigeria_cities else "us"
+
+    scheduled_scans.append({
+        "niche": niche,
+        "city": city,
+        "country": country_code
+    })
     schedule.every().day.at("08:00").do(
-        run_scan, bot, chat_id, niche, city)
+        run_scan, bot, chat_id, niche, city, country_code
+    )
 
     update.message.reply_text(
         f"Scheduled daily scan set\n\n"
         f"Niche: {niche}\n"
         f"City: {city}\n"
-        f"Time: Every morning at 8:00 AM\n\n"
-        f"Bot will send leads automatically."
+        f"Time: Every morning 8:00 AM\n\n"
+        f"Bot sends leads automatically."
     )
 
 
@@ -437,7 +471,7 @@ def cmd_export(update: Update, context: CallbackContext):
     if update.effective_user.id != TELEGRAM_USER_ID:
         return
     update.message.reply_text(
-        f"All leads are logged in your Google Sheet.\n\n"
+        f"All leads are in your Google Sheet.\n\n"
         f"Credits used today: {credits_used}/1000\n"
         f"Credits remaining: {1000 - credits_used}"
     )
@@ -466,7 +500,8 @@ def main():
     dp.add_handler(CommandHandler("export", cmd_export))
 
     scheduler_thread = threading.Thread(
-        target=run_scheduler, daemon=True)
+        target=run_scheduler, daemon=True
+    )
     scheduler_thread.start()
 
     updater.start_polling()
@@ -478,11 +513,11 @@ def main():
             "chat_id": TELEGRAM_USER_ID,
             "text": (
                 "MAPS LEAD BOT IS LIVE\n\n"
-                "Send /start to see all commands\n\n"
-                "Try your first scan:\n"
+                "Send /start to see commands\n\n"
+                "Try:\n"
                 "/scan restaurant lagos\n"
                 "/scan salon abuja\n"
-                "/scan hotel ibadan"
+                "/scan pharmacy ibadan"
             )
         }
     )
