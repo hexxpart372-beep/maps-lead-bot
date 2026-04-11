@@ -32,6 +32,13 @@ MIN_SCORE = 5
 scheduled_scans = []
 credits_used = 0
 
+NIGERIA_CITIES = [
+    "lagos", "abuja", "ibadan", "kano", "port harcourt",
+    "benin", "enugu", "kaduna", "owerri", "warri",
+    "calabar", "jos", "ilorin", "abeokuta", "onitsha",
+    "uyo", "asaba", "maiduguri", "zaria", "sokoto"
+]
+
 
 # ─── Telegram Helper ─────────────────────────────────────
 def send_telegram(bot, chat_id, text):
@@ -86,10 +93,12 @@ def search_maps(niche, city, country_code="ng"):
             credits_used += 1
             data = response.json()
             results = data.get("local_results", [])
-            logger.info(f"Found {len(results)} businesses for {niche} in {city}")
+            logger.info(
+                f"Found {len(results)} businesses for {niche} in {city}")
             return results
         else:
-            logger.error(f"ScrapingDog error {response.status_code}: {response.text}")
+            logger.error(
+                f"ScrapingDog error {response.status_code}: {response.text}")
             return []
     except Exception as e:
         logger.error(f"Maps search error: {e}")
@@ -124,21 +133,21 @@ def score_business(business):
     # Reviews scoring
     if reviews == 0:
         score += 4
-        weaknesses.append("No reviews at all")
+        weaknesses.append("No reviews on profile")
     elif reviews < 20:
         score += 3
         weaknesses.append(f"Only {reviews} reviews")
     elif reviews < 50:
         score += 2
-        weaknesses.append(f"Low review count: {reviews}")
+        weaknesses.append(f"Low profile activity: {reviews} reviews")
     elif reviews < 100:
         score += 1
-        weaknesses.append(f"Under 100 reviews: {reviews}")
+        weaknesses.append(f"Profile needs more activity")
 
     # Rating scoring
     if rating == 0:
         score += 2
-        weaknesses.append("No rating yet")
+        weaknesses.append("No rating on profile")
     elif rating < 3.0:
         score += 3
         weaknesses.append(f"Very low rating: {rating}")
@@ -147,16 +156,16 @@ def score_business(business):
         weaknesses.append(f"Below average rating: {rating}")
     elif rating < 4.5:
         score += 1
-        weaknesses.append(f"Rating could be better: {rating}")
+        weaknesses.append(f"Rating could be stronger: {rating}")
 
     # No description
     description = business.get("description", "") or ""
     if not description:
         score += 2
-        weaknesses.append("No business description")
+        weaknesses.append("No business description on profile")
 
     if not weaknesses:
-        weaknesses.append("Listing needs improvement")
+        weaknesses.append("Profile incomplete")
 
     return score, weaknesses, reviews, rating
 
@@ -165,7 +174,7 @@ def score_business(business):
 def generate_audit(business_name, niche, city, weaknesses):
     try:
         weakness_text = "\n".join([f"- {w}" for w in weaknesses])
-        prompt = f"""You are a local business visibility expert.
+        prompt = f"""You are a local business profile optimization expert.
 
 Business: {business_name}
 Type: {niche}
@@ -173,11 +182,15 @@ Location: {city}
 Issues found:
 {weakness_text}
 
-Write a 2-3 sentence personalized audit that:
-- Mentions their specific weaknesses
-- Explains how it costs them customers
-- Sounds urgent but not salesy
-- Is specific not generic
+Write a 2-3 sentence audit that focuses ONLY on:
+- Missing website
+- Incomplete Google Maps profile
+- Poor or missing business description
+- No professional branding or online presence
+
+Do NOT mention reviews, marketing, advertising or getting more customers.
+Sound urgent but professional.
+Be specific to this business.
 
 Write ONLY the audit. Nothing else."""
 
@@ -190,24 +203,28 @@ Write ONLY the audit. Nothing else."""
         return response.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"Groq audit error: {e}")
-        return f"{business_name} has visibility issues that are costing them customers daily."
+        return (
+            f"{business_name} has an incomplete online profile that makes it "
+            f"hard for potential customers to find and trust them."
+        )
 
 
 def generate_pitch(business_name, niche, city, weaknesses):
     try:
-        weakness_text = weaknesses[0] if weaknesses else "listing issues"
+        weakness_text = weaknesses[0] if weaknesses else "incomplete profile"
         prompt = f"""Write a short WhatsApp message to a {niche} business owner in {city}.
 
 Their main issue: {weakness_text}
 Business name: {business_name}
 
-The message should:
-- Be friendly and professional
-- Point out their specific issue
-- Offer to fix it
-- End with a question
-- Be under 50 words
-- Sound human not robotic
+Offer to fix their online presence specifically:
+website setup, Google Maps profile completion, or business description.
+
+Do NOT mention reviews, marketing, advertising or getting more customers.
+Be friendly and professional.
+End with a question.
+Under 50 words.
+Sound like a real helpful person.
 
 Write ONLY the message. Nothing else."""
 
@@ -220,7 +237,11 @@ Write ONLY the message. Nothing else."""
         return response.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"Groq pitch error: {e}")
-        return f"Hi, I found {business_name} on Google Maps and noticed some issues with your listing that might be reducing your visibility. Can I show you what I mean?"
+        return (
+            f"Hi, I came across {business_name} on Google Maps and noticed "
+            f"your online profile is incomplete. I help businesses fix this "
+            f"quickly. Would you be interested?"
+        )
 
 
 # ─── Core Scan Function ──────────────────────────────────
@@ -237,7 +258,7 @@ def run_scan(bot, chat_id, niche, city, country_code="ng"):
         send_telegram(
             bot, chat_id,
             f"No results found for {niche} in {city}.\n\n"
-            f"Try these formats:\n"
+            f"Try:\n"
             f"/scan salon lagos\n"
             f"/scan pharmacy abuja\n"
             f"/scan hotel ibadan"
@@ -272,14 +293,14 @@ def run_scan(bot, chat_id, niche, city, country_code="ng"):
 
             # Message 1 — Business details
             msg = (
-                f"WEAK BUSINESS #{weak_found}\n"
+                f"WEAK PROFILE #{weak_found}\n"
                 f"Score: {score}/10\n\n"
                 f"Name: {name}\n"
                 f"Type: {niche}\n"
                 f"Rating: {rating} ({reviews} reviews)\n"
                 f"Description: {description[:100]}\n"
                 f"Address: {address}\n\n"
-                f"Weaknesses:\n{weakness_text}\n\n"
+                f"Profile Issues:\n{weakness_text}\n\n"
                 f"AI AUDIT:\n{audit}\n\n"
                 f"Maps Link:\n{maps_link}"
             )
@@ -311,7 +332,7 @@ def run_scan(bot, chat_id, niche, city, country_code="ng"):
         f"SCAN COMPLETE\n"
         f"Niche: {niche} in {city}\n"
         f"Total found: {total}\n"
-        f"Weak businesses (score {MIN_SCORE}+): {weak_found}\n"
+        f"Weak profiles (score {MIN_SCORE}+): {weak_found}\n"
         f"Credits used today: {credits_used}/1000"
     )
     send_telegram(bot, chat_id, summary)
@@ -326,7 +347,7 @@ def cmd_start(update: Update, context: CallbackContext):
         "Commands:\n\n"
         "/scan [niche] [city]\n"
         "  Nigeria: /scan restaurant lagos\n"
-        "  Abroad: /scan restaurant texas\n\n"
+        "  Abroad: /scan barbershop houston\n\n"
         "/setscore [number]\n"
         "  Set minimum weakness score\n"
         "  Default: 5. Lower = more results\n\n"
@@ -358,14 +379,7 @@ def cmd_scan(update: Update, context: CallbackContext):
     city = " ".join(args[1:])
     bot = context.bot
     chat_id = update.effective_chat.id
-
-    # Detect country from city name
-    nigeria_cities = [
-        "lagos", "abuja", "ibadan", "kano", "port harcourt",
-        "benin", "enugu", "kaduna", "owerri", "warri",
-        "calabar", "jos", "ilorin", "abeokuta", "onitsha"
-    ]
-    country_code = "ng" if city.lower() in nigeria_cities else "us"
+    country_code = "ng" if city.lower() in NIGERIA_CITIES else "us"
 
     thread = threading.Thread(
         target=run_scan,
@@ -383,8 +397,8 @@ def cmd_setscore(update: Update, context: CallbackContext):
         update.message.reply_text(
             f"Current minimum score: {MIN_SCORE}\n"
             f"Usage: /setscore 4\n"
-            f"Lower = more results shown\n"
-            f"Higher = only weakest businesses"
+            f"Lower = more results\n"
+            f"Higher = only weakest profiles"
         )
         return
     try:
@@ -408,17 +422,12 @@ def cmd_schedule(update: Update, context: CallbackContext):
             "Example: /schedule restaurant lagos"
         )
         return
+
     niche = args[0]
     city = " ".join(args[1:])
     bot = context.bot
     chat_id = update.effective_chat.id
-
-    nigeria_cities = [
-        "lagos", "abuja", "ibadan", "kano", "port harcourt",
-        "benin", "enugu", "kaduna", "owerri", "warri",
-        "calabar", "jos", "ilorin", "abeokuta", "onitsha"
-    ]
-    country_code = "ng" if city.lower() in nigeria_cities else "us"
+    country_code = "ng" if city.lower() in NIGERIA_CITIES else "us"
 
     scheduled_scans.append({
         "niche": niche,
