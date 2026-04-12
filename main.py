@@ -79,23 +79,41 @@ def search_maps(niche, city, country_code="ng"):
     global credits_used
     try:
         url = "https://api.scrapingdog.com/google_local/"
+
+        # Force city into query for better location accuracy
+        if country_code == "ng":
+            query = f"{niche}+in+{city}+Nigeria"
+            location = f"{city}, Nigeria"
+        else:
+            query = f"{niche}+in+{city}"
+            location = f"{city}"
+
         params = {
             "api_key": SCRAPINGDOG_API_KEY,
-            "query": f"{niche}+in+{city}",
+            "query": query,
             "country": country_code,
+            "location": location,
             "language": "en"
         }
-        if country_code == "ng":
-            params["location"] = f"{city}, Nigeria"
 
         response = requests.get(url, params=params, timeout=30)
         if response.status_code == 200:
             credits_used += 1
             data = response.json()
             results = data.get("local_results", [])
+
+            # Filter results to match city
+            filtered = []
+            for r in results:
+                address = r.get("address", "").lower()
+                if city.lower() in address or country_code == "us":
+                    filtered.append(r)
+
+            # If filter removes everything fall back to all results
+            final = filtered if filtered else results
             logger.info(
-                f"Found {len(results)} businesses for {niche} in {city}")
-            return results
+                f"Found {len(final)} businesses for {niche} in {city}")
+            return final
         else:
             logger.error(
                 f"ScrapingDog error {response.status_code}: {response.text}")
@@ -110,7 +128,7 @@ def score_business(business):
     score = 0
     issues = []
 
-    # ── Reviews ──────────────────────────────────────────
+    # Reviews
     reviews_raw = business.get("reviews", "0")
     try:
         reviews = int(
@@ -123,29 +141,29 @@ def score_business(business):
     except:
         reviews = 0
 
-    # Only flag genuinely low review counts
     if reviews == 0:
         score += 2
-        issues.append(f"0 reviews on profile")
-    elif reviews <= 25:
+        issues.append("0 reviews on profile")
+    elif reviews <= 15:
         score += 2
         issues.append(f"Only {reviews} reviews")
+    elif reviews <= 30:
+        score += 1
+        issues.append(f"Low activity: {reviews} reviews")
 
-    # ── Website ──────────────────────────────────────────
+    # Website
     website = business.get("website", "") or ""
     if not website:
         score += 2
         issues.append("No website linked")
 
-    # ── Description ──────────────────────────────────────
+    # Description
     description = business.get("description", "") or ""
     if not description or len(description) < 20:
         score += 1
-        issues.append("Empty or generic description")
+        issues.append("No business description")
 
-    # ── Photos ───────────────────────────────────────────
-    # ScrapingDog doesnt return photo count directly
-    # We infer from thumbnail presence
+    # Photos — infer from thumbnail
     thumbnail = business.get("thumbnail", "") or ""
     if not thumbnail:
         score += 1
@@ -158,23 +176,21 @@ def score_business(business):
 def generate_pitch(business_name, niche, city, issues):
     try:
         issues_text = "\n".join([f"- {i}" for i in issues])
-        prompt = f"""Write a short WhatsApp outreach message to a {niche} business owner.
+        prompt = f"""Write a short WhatsApp message to a {niche} business owner.
 
 Business name: {business_name}
 City: {city}
-Their specific issues:
+Their issues:
 {issues_text}
 
-Rules:
-- Start with: Hi, I found your business while searching on Google Maps.
-- Mention 1-2 of their specific issues naturally
-- Offer to fix their online profile (website, Maps listing, description)
-- End with: Can I show you what I mean?
-- Under 60 words total
-- Sound helpful and human
-- Do NOT mention reviews, marketing, advertising or SEO
+Use this exact structure:
+- Start: "Hello, I found your {niche} on Google Maps and noticed you don't have a website."
+- One sentence: mention you built a simple demo site for them
+- End with: "Can I send you the link to see it?"
 
-Write ONLY the message. No quotes around it."""
+Under 60 words. Sound human. No marketing language.
+
+Write ONLY the message. Nothing else."""
 
         response = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
@@ -185,13 +201,11 @@ Write ONLY the message. No quotes around it."""
         return response.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"Groq pitch error: {e}")
-        issue_hint = issues[0] if issues else "incomplete profile"
         return (
-            f"Hi, I found your business while searching on Google Maps.\n"
-            f"I noticed your profile has {issue_hint}, which usually reduces "
-            f"how many customers choose you.\n"
-            f"I help businesses quickly fix this so they get more visibility on Maps.\n"
-            f"Can I show you what I mean?"
+            f"Hello, I found your {niche} on Google Maps and noticed "
+            f"you don't have a website. I went ahead and designed a "
+            f"simple one for you to show how customers could find you online. "
+            f"Can I send you the link to see it?"
         )
 
 
@@ -212,7 +226,7 @@ def run_scan(bot, chat_id, niche, city, country_code="ng"):
             f"Try:\n"
             f"/scan salon lagos\n"
             f"/scan barber houston\n"
-            f"/scan pharmacy abuja"
+            f"/scan clinic abuja"
         )
         return
 
@@ -228,45 +242,52 @@ def run_scan(bot, chat_id, niche, city, country_code="ng"):
                 f"https://www.google.com/maps?cid={place_id}"
                 if place_id else "N/A"
             )
-            website = business.get("website", "") or "None"
-            phone = business.get("phone", "") or "Check Maps"
+            phone = business.get("phone", "") or ""
 
             score, issues, reviews = score_business(business)
 
             if score < MIN_SCORE:
                 continue
 
-            weak_found += 1
+            # Skip if address doesnt match city for Nigeria
+            if country_code == "ng":
+                address_lower = address.lower()
+                if city.lower() not in address_lower and "nigeria" not in address_lower:
+                    if address != "N/A":
+                        continue
 
+            weak_found += 1
             pitch = generate_pitch(name, niche, city, issues)
             issues_text = "\n".join([f"• {i}" for i in issues])
 
-            # Message 1 — Clean fast lead card
-            msg = (
+            # Message 1 — Lead info
+            msg1 = (
                 f"TARGET #{weak_found}\n\n"
                 f"Name: {name}\n"
-                f"Phone: {phone}\n"
                 f"Address: {address}\n"
                 f"Maps: {maps_link}\n\n"
-                f"Issues found:\n{issues_text}"
+                f"Issues:\n{issues_text}"
             )
-            send_telegram(bot, chat_id, msg)
+            send_telegram(bot, chat_id, msg1)
 
-            time.sleep(2)
+            time.sleep(1)
 
-            # Message 2 — Pitch only easy to copy
-            pitch_msg = (
-                f"COPY THIS PITCH:\n\n"
-                f"{pitch}"
-            )
-            send_telegram(bot, chat_id, pitch_msg)
+            # Message 2 — Phone number only easy to copy
+            if phone:
+                send_telegram(bot, chat_id, phone)
+            else:
+                send_telegram(bot, chat_id, "No phone listed — check Maps link")
+
+            time.sleep(1)
+
+            # Message 3 — Pitch only easy to copy
+            send_telegram(bot, chat_id, pitch)
 
             now = datetime.now().strftime("%Y-%m-%d %H:%M")
             log_to_sheet([
                 now, name, niche, city,
                 str(score), str(reviews),
-                phone, website, address,
-                maps_link, "Pending"
+                phone, address, maps_link, "Pending"
             ])
 
             time.sleep(5)
@@ -304,7 +325,7 @@ def cmd_start(update: Update, context: CallbackContext):
         "/status\n"
         "  Credits and bot info\n\n"
         "/export\n"
-        "  Check Google Sheet for all leads"
+        "  Check Google Sheet for leads"
     )
     update.message.reply_text(msg)
 
@@ -471,7 +492,7 @@ def main():
                 "Try:\n"
                 "/scan salon lagos\n"
                 "/scan barber houston\n"
-                "/scan pharmacy abuja"
+                "/scan clinic abuja"
             )
         }
     )
