@@ -80,7 +80,6 @@ def search_maps(niche, city, country_code="ng"):
     try:
         url = "https://api.scrapingdog.com/google_local/"
 
-        # Force city into query for better location accuracy
         if country_code == "ng":
             query = f"{niche}+in+{city}+Nigeria"
             location = f"{city}, Nigeria"
@@ -102,21 +101,21 @@ def search_maps(niche, city, country_code="ng"):
             data = response.json()
             results = data.get("local_results", [])
 
-            # Filter results to match city
-            filtered = []
-            for r in results:
-                address = r.get("address", "").lower()
-                if city.lower() in address or country_code == "us":
-                    filtered.append(r)
+            # Filter by city for Nigeria
+            if country_code == "ng":
+                filtered = [
+                    r for r in results
+                    if city.lower() in r.get("address", "").lower()
+                    or "nigeria" in r.get("address", "").lower()
+                ]
+                final = filtered if filtered else results
+            else:
+                final = results
 
-            # If filter removes everything fall back to all results
-            final = filtered if filtered else results
-            logger.info(
-                f"Found {len(final)} businesses for {niche} in {city}")
+            logger.info(f"Found {len(final)} businesses for {niche} in {city}")
             return final
         else:
-            logger.error(
-                f"ScrapingDog error {response.status_code}: {response.text}")
+            logger.error(f"ScrapingDog error {response.status_code}: {response.text}")
             return []
     except Exception as e:
         logger.error(f"Maps search error: {e}")
@@ -163,13 +162,31 @@ def score_business(business):
         score += 1
         issues.append("No business description")
 
-    # Photos — infer from thumbnail
+    # Photos
     thumbnail = business.get("thumbnail", "") or ""
     if not thumbnail:
         score += 1
         issues.append("No photos on profile")
 
     return score, issues, reviews
+
+
+# ─── Format WhatsApp link ─────────────────────────────────
+def format_wa_link(phone):
+    if not phone:
+        return ""
+    clean = (
+        phone
+        .replace("+", "")
+        .replace(" ", "")
+        .replace("-", "")
+        .replace("(", "")
+        .replace(")", "")
+        .strip()
+    )
+    if clean:
+        return f"https://wa.me/{clean}"
+    return ""
 
 
 # ─── Generate Pitch ──────────────────────────────────────
@@ -189,8 +206,9 @@ Use this exact structure:
 - End with: "Can I send you the link to see it?"
 
 Under 60 words. Sound human. No marketing language.
+No quotes around the message.
 
-Write ONLY the message. Nothing else."""
+Write ONLY the message."""
 
         response = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
@@ -198,13 +216,13 @@ Write ONLY the message. Nothing else."""
             max_tokens=100,
             temperature=0.6,
         )
-        return response.choices[0].message.content.strip()
+        return response.choices[0].message.content.strip().strip('"')
     except Exception as e:
         logger.error(f"Groq pitch error: {e}")
         return (
             f"Hello, I found your {niche} on Google Maps and noticed "
-            f"you don't have a website. I went ahead and designed a "
-            f"simple one for you to show how customers could find you online. "
+            f"you don't have a website. I went ahead and built a simple "
+            f"demo site for {business_name} to show what it could look like. "
             f"Can I send you the link to see it?"
         )
 
@@ -240,54 +258,58 @@ def run_scan(bot, chat_id, niche, city, country_code="ng"):
             place_id = business.get("place_id", "")
             maps_link = (
                 f"https://www.google.com/maps?cid={place_id}"
-                if place_id else "N/A"
+                if place_id else ""
             )
             phone = business.get("phone", "") or ""
+            wa_link = format_wa_link(phone)
 
             score, issues, reviews = score_business(business)
 
             if score < MIN_SCORE:
                 continue
 
-            # Skip if address doesnt match city for Nigeria
-            if country_code == "ng":
-                address_lower = address.lower()
-                if city.lower() not in address_lower and "nigeria" not in address_lower:
-                    if address != "N/A":
-                        continue
+            # Skip if no phone AND no maps link
+            if not phone and not maps_link:
+                continue
 
             weak_found += 1
             pitch = generate_pitch(name, niche, city, issues)
             issues_text = "\n".join([f"• {i}" for i in issues])
 
             # Message 1 — Lead info
+            maps_display = maps_link if maps_link else "Not available"
             msg1 = (
                 f"TARGET #{weak_found}\n\n"
                 f"Name: {name}\n"
                 f"Address: {address}\n"
-                f"Maps: {maps_link}\n\n"
+                f"Maps: {maps_display}\n\n"
                 f"Issues:\n{issues_text}"
             )
             send_telegram(bot, chat_id, msg1)
 
             time.sleep(1)
 
-            # Message 2 — Phone number only easy to copy
-            if phone:
-                send_telegram(bot, chat_id, phone)
+            # Message 2 — Phone + WhatsApp one click link
+            if phone and wa_link:
+                msg2 = f"{phone}\n{wa_link}"
+            elif phone:
+                msg2 = phone
+            elif maps_link:
+                msg2 = f"No phone listed\nCheck Maps: {maps_link}"
             else:
-                send_telegram(bot, chat_id, "No phone listed — check Maps link")
+                msg2 = "No phone listed"
+            send_telegram(bot, chat_id, msg2)
 
             time.sleep(1)
 
-            # Message 3 — Pitch only easy to copy
+            # Message 3 — Pitch only
             send_telegram(bot, chat_id, pitch)
 
             now = datetime.now().strftime("%Y-%m-%d %H:%M")
             log_to_sheet([
                 now, name, niche, city,
                 str(score), str(reviews),
-                phone, address, maps_link, "Pending"
+                phone, address, maps_display, "Pending"
             ])
 
             time.sleep(5)
