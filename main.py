@@ -17,7 +17,6 @@ from telegram.ext import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ─── Environment Variables ────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_USER_ID = int(os.environ["TELEGRAM_USER_ID"])
 SCRAPINGDOG_API_KEY = os.environ["SCRAPINGDOG_API_KEY"]
@@ -27,7 +26,6 @@ SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-# ─── Settings ────────────────────────────────────────────
 MIN_SCORE = 3
 scheduled_scans = []
 credits_used = 0
@@ -40,7 +38,6 @@ NIGERIA_CITIES = [
 ]
 
 
-# ─── Telegram Helper ─────────────────────────────────────
 def send_telegram(bot, chat_id, text):
     try:
         bot.send_message(chat_id=chat_id, text=text)
@@ -48,7 +45,6 @@ def send_telegram(bot, chat_id, text):
         logger.error(f"Telegram error: {e}")
 
 
-# ─── Google Sheets ───────────────────────────────────────
 def get_sheets_client():
     try:
         scope = [
@@ -74,18 +70,16 @@ def log_to_sheet(data):
         logger.error(f"Sheet log error: {e}")
 
 
-# ─── ScrapingDog Maps Search ─────────────────────────────
 def search_maps(niche, city, country_code="ng"):
     global credits_used
     try:
         url = "https://api.scrapingdog.com/google_local/"
-
         if country_code == "ng":
             query = f"{niche}+in+{city}+Nigeria"
             location = f"{city}, Nigeria"
         else:
             query = f"{niche}+in+{city}"
-            location = f"{city}"
+            location = city
 
         params = {
             "api_key": SCRAPINGDOG_API_KEY,
@@ -94,48 +88,37 @@ def search_maps(niche, city, country_code="ng"):
             "location": location,
             "language": "en"
         }
-
         response = requests.get(url, params=params, timeout=30)
         if response.status_code == 200:
             credits_used += 1
             data = response.json()
             results = data.get("local_results", [])
-
-            # Filter by city for Nigeria
             if country_code == "ng":
                 filtered = [
                     r for r in results
                     if city.lower() in r.get("address", "").lower()
                     or "nigeria" in r.get("address", "").lower()
                 ]
-                final = filtered if filtered else results
-            else:
-                final = results
-
-            logger.info(f"Found {len(final)} businesses for {niche} in {city}")
-            return final
+                return filtered if filtered else results
+            return results
         else:
-            logger.error(f"ScrapingDog error {response.status_code}: {response.text}")
+            logger.error(f"ScrapingDog error: {response.text}")
             return []
     except Exception as e:
         logger.error(f"Maps search error: {e}")
         return []
 
 
-# ─── Weakness Scoring ────────────────────────────────────
 def score_business(business):
     score = 0
     issues = []
 
-    # Reviews
     reviews_raw = business.get("reviews", "0")
     try:
         reviews = int(
             str(reviews_raw)
-            .replace(",", "")
-            .replace("(", "")
-            .replace(")", "")
-            .strip()
+            .replace(",", "").replace("(", "")
+            .replace(")", "").strip()
         )
     except:
         reviews = 0
@@ -150,19 +133,16 @@ def score_business(business):
         score += 1
         issues.append(f"Low activity: {reviews} reviews")
 
-    # Website
     website = business.get("website", "") or ""
     if not website:
         score += 2
         issues.append("No website linked")
 
-    # Description
     description = business.get("description", "") or ""
     if not description or len(description) < 20:
         score += 1
         issues.append("No business description")
 
-    # Photos
     thumbnail = business.get("thumbnail", "") or ""
     if not thumbnail:
         score += 1
@@ -171,43 +151,31 @@ def score_business(business):
     return score, issues, reviews
 
 
-# ─── Format WhatsApp link ─────────────────────────────────
 def format_wa_link(phone):
     if not phone:
         return ""
     clean = (
-        phone
-        .replace("+", "")
-        .replace(" ", "")
-        .replace("-", "")
-        .replace("(", "")
-        .replace(")", "")
-        .strip()
+        phone.replace("+", "").replace(" ", "")
+        .replace("-", "").replace("(", "")
+        .replace(")", "").strip()
     )
-    if clean:
-        return f"https://wa.me/{clean}"
-    return ""
+    return f"https://wa.me/{clean}" if clean else ""
 
 
-# ─── Generate Pitch ──────────────────────────────────────
 def generate_pitch(business_name, niche, city, issues):
     try:
         issues_text = "\n".join([f"- {i}" for i in issues])
         prompt = f"""Write a short WhatsApp message to a {niche} business owner.
 
-Business name: {business_name}
-City: {city}
-Their issues:
-{issues_text}
+Business: {business_name}, {city}
+Issues: {issues_text}
 
-Use this exact structure:
-- Start: "Hello, I found your {niche} on Google Maps and noticed you don't have a website."
-- One sentence: mention you built a simple demo site for them
-- End with: "Can I send you the link to see it?"
+Structure:
+- Start: "Hello, I found your {niche} on Google Maps."
+- Mention you built a demo website for them
+- End: "Can I send you the link to see it?"
 
-Under 60 words. Sound human. No marketing language.
-No quotes around the message.
-
+Under 60 words. Human tone. No marketing language.
 Write ONLY the message."""
 
         response = groq_client.chat.completions.create(
@@ -220,14 +188,36 @@ Write ONLY the message."""
     except Exception as e:
         logger.error(f"Groq pitch error: {e}")
         return (
-            f"Hello, I found your {niche} on Google Maps and noticed "
-            f"you don't have a website. I went ahead and built a simple "
-            f"demo site for {business_name} to show what it could look like. "
+            f"Hello, I found your {niche} on Google Maps. "
+            f"I built a simple demo website for {business_name} "
+            f"to show what it could look like online. "
             f"Can I send you the link to see it?"
         )
 
 
-# ─── Core Scan Function ──────────────────────────────────
+def generate_deepsite_prompt(business_name, niche, city, phone, issues):
+    issues_text = ", ".join(issues) if issues else "incomplete profile"
+    wa_number = phone.replace("+", "").replace(" ", "").replace("-", "") if phone else ""
+    wa_link = f"https://wa.me/{wa_number}" if wa_number else "https://wa.me/"
+
+    return (
+        f"Create a professional one-page business website for:\n\n"
+        f"Business Name: {business_name}\n"
+        f"Type: {niche}\n"
+        f"Location: {city}\n"
+        f"WhatsApp: {wa_link}\n\n"
+        f"Include these sections:\n"
+        f"1. Hero section with business name and tagline\n"
+        f"2. Services/What We Offer section\n"
+        f"3. Location section mentioning {city}\n"
+        f"4. Large WhatsApp contact button linking to {wa_link}\n"
+        f"5. Opening hours placeholder\n\n"
+        f"Style: Clean, modern, mobile-friendly, professional.\n"
+        f"Color scheme: Warm and trustworthy.\n"
+        f"Make it look like a real established business website."
+    )
+
+
 def run_scan(bot, chat_id, niche, city, country_code="ng"):
     global MIN_SCORE
     send_telegram(
@@ -240,11 +230,9 @@ def run_scan(bot, chat_id, niche, city, country_code="ng"):
     if not businesses:
         send_telegram(
             bot, chat_id,
-            f"No results found for {niche} in {city}.\n\n"
-            f"Try:\n"
-            f"/scan salon lagos\n"
-            f"/scan barber houston\n"
-            f"/scan clinic abuja"
+            f"No results for {niche} in {city}.\n\n"
+            f"Try:\n/scan salon lagos\n"
+            f"/scan barber houston\n/scan clinic abuja"
         )
         return
 
@@ -268,67 +256,78 @@ def run_scan(bot, chat_id, niche, city, country_code="ng"):
             if score < MIN_SCORE:
                 continue
 
-            # Skip if no phone AND no maps link
             if not phone and not maps_link:
                 continue
 
             weak_found += 1
             pitch = generate_pitch(name, niche, city, issues)
+            deepsite_prompt = generate_deepsite_prompt(
+                name, niche, city, phone, issues)
             issues_text = "\n".join([f"• {i}" for i in issues])
 
-            # Message 1 — Lead info
-            maps_display = maps_link if maps_link else "Not available"
-            msg1 = (
+            # MSG 1 — Lead info
+            send_telegram(bot, chat_id,
                 f"TARGET #{weak_found}\n\n"
                 f"Name: {name}\n"
+                f"Type: {niche}\n"
                 f"Address: {address}\n"
-                f"Maps: {maps_display}\n\n"
+                f"Score: {score}/10\n\n"
                 f"Issues:\n{issues_text}"
             )
-            send_telegram(bot, chat_id, msg1)
-
             time.sleep(1)
 
-            # Message 2 — Phone + WhatsApp one click link
-            if phone and wa_link:
-                msg2 = f"{phone}\n{wa_link}"
-            elif phone:
-                msg2 = phone
-            elif maps_link:
-                msg2 = f"No phone listed\nCheck Maps: {maps_link}"
+            # MSG 2 — Phone only
+            if phone:
+                send_telegram(bot, chat_id, phone)
             else:
-                msg2 = "No phone listed"
-            send_telegram(bot, chat_id, msg2)
-
+                send_telegram(bot, chat_id, "No phone — check Maps")
             time.sleep(1)
 
-            # Message 3 — Pitch only
+            # MSG 3 — WhatsApp link only
+            if wa_link:
+                send_telegram(bot, chat_id, wa_link)
+            else:
+                send_telegram(bot, chat_id, "No WhatsApp link available")
+            time.sleep(1)
+
+            # MSG 4 — Maps link only
+            if maps_link:
+                send_telegram(bot, chat_id, maps_link)
+            else:
+                send_telegram(bot, chat_id, "No Maps link available")
+            time.sleep(1)
+
+            # MSG 5 — Pitch only
             send_telegram(bot, chat_id, pitch)
+            time.sleep(1)
+
+            # MSG 6 — DeepSite prompt
+            send_telegram(bot, chat_id,
+                f"DEEPSITE PROMPT:\n\n{deepsite_prompt}"
+            )
 
             now = datetime.now().strftime("%Y-%m-%d %H:%M")
             log_to_sheet([
-                now, name, niche, city,
-                str(score), str(reviews),
-                phone, address, maps_display, "Pending"
+                now, name, niche, city, str(score),
+                str(reviews), phone, address,
+                maps_link, "Pending"
             ])
 
             time.sleep(5)
 
         except Exception as e:
-            logger.error(f"Business processing error: {e}")
+            logger.error(f"Business error: {e}")
             continue
 
-    summary = (
+    send_telegram(bot, chat_id,
         f"SCAN COMPLETE\n"
         f"Niche: {niche} in {city}\n"
-        f"Total scanned: {total}\n"
+        f"Scanned: {total}\n"
         f"Weak targets: {weak_found}\n"
-        f"Credits used today: {credits_used}/1000"
+        f"Credits used: {credits_used}/1000"
     )
-    send_telegram(bot, chat_id, summary)
 
 
-# ─── Telegram Commands ───────────────────────────────────
 def cmd_start(update: Update, context: CallbackContext):
     if update.effective_user.id != TELEGRAM_USER_ID:
         return
@@ -336,18 +335,22 @@ def cmd_start(update: Update, context: CallbackContext):
         "MAPS LEAD BOT READY\n\n"
         "Commands:\n\n"
         "/scan [niche] [city]\n"
-        "  Nigeria: /scan salon lagos\n"
-        "  Abroad: /scan barber houston\n\n"
+        "  /scan salon lagos\n"
+        "  /scan barber houston\n\n"
         "/setscore [number]\n"
-        "  Min weakness score. Default: 3\n\n"
+        "  Default: 3\n\n"
         "/schedule [niche] [city]\n"
-        "  Auto scan every morning 8am\n\n"
-        "/schedules\n"
-        "  View scheduled scans\n\n"
-        "/status\n"
-        "  Credits and bot info\n\n"
-        "/export\n"
-        "  Check Google Sheet for leads"
+        "  Auto scan every 8am\n\n"
+        "/schedules — view scheduled\n"
+        "/status — credits info\n"
+        "/export — check sheet\n\n"
+        "Each lead sends 6 messages:\n"
+        "1. Lead info\n"
+        "2. Phone number\n"
+        "3. WhatsApp link\n"
+        "4. Maps link\n"
+        "5. Pitch to copy\n"
+        "6. DeepSite prompt"
     )
     update.message.reply_text(msg)
 
@@ -359,11 +362,9 @@ def cmd_scan(update: Update, context: CallbackContext):
     if len(args) < 2:
         update.message.reply_text(
             "Usage: /scan [niche] [city]\n"
-            "Example: /scan salon lagos\n"
-            "Example: /scan barber houston"
+            "Example: /scan salon lagos"
         )
         return
-
     niche = args[0]
     city = " ".join(args[1:])
     bot = context.bot
@@ -384,21 +385,15 @@ def cmd_setscore(update: Update, context: CallbackContext):
     args = context.args
     if not args:
         update.message.reply_text(
-            f"Current minimum score: {MIN_SCORE}\n"
-            f"Usage: /setscore 3\n"
-            f"Lower = more results\n"
-            f"Higher = only weakest targets"
+            f"Current score: {MIN_SCORE}\n"
+            f"Usage: /setscore 3"
         )
         return
     try:
         MIN_SCORE = int(args[0])
-        update.message.reply_text(
-            f"Minimum score updated to {MIN_SCORE}/10"
-        )
+        update.message.reply_text(f"Score updated to {MIN_SCORE}/10")
     except:
-        update.message.reply_text(
-            "Enter a valid number. Example: /setscore 3"
-        )
+        update.message.reply_text("Enter a valid number.")
 
 
 def cmd_schedule(update: Update, context: CallbackContext):
@@ -407,31 +402,21 @@ def cmd_schedule(update: Update, context: CallbackContext):
     args = context.args
     if len(args) < 2:
         update.message.reply_text(
-            "Usage: /schedule [niche] [city]\n"
-            "Example: /schedule salon lagos"
+            "Usage: /schedule [niche] [city]"
         )
         return
-
     niche = args[0]
     city = " ".join(args[1:])
     bot = context.bot
     chat_id = update.effective_chat.id
     country_code = "ng" if city.lower() in NIGERIA_CITIES else "us"
 
-    scheduled_scans.append({
-        "niche": niche,
-        "city": city,
-        "country": country_code
-    })
+    scheduled_scans.append({"niche": niche, "city": city})
     schedule.every().day.at("08:00").do(
         run_scan, bot, chat_id, niche, city, country_code
     )
-
     update.message.reply_text(
-        f"Scheduled daily scan set\n\n"
-        f"Niche: {niche}\n"
-        f"City: {city}\n"
-        f"Time: Every morning 8:00 AM"
+        f"Scheduled: {niche} in {city} — Daily 8AM"
     )
 
 
@@ -439,52 +424,44 @@ def cmd_schedules(update: Update, context: CallbackContext):
     if update.effective_user.id != TELEGRAM_USER_ID:
         return
     if not scheduled_scans:
-        update.message.reply_text(
-            "No scheduled scans yet.\n"
-            "Use /schedule salon lagos to set one."
-        )
+        update.message.reply_text("No scheduled scans yet.")
         return
     msg = "SCHEDULED SCANS:\n\n"
     for i, s in enumerate(scheduled_scans, 1):
-        msg += f"{i}. {s['niche']} in {s['city']} - Daily 8AM\n"
+        msg += f"{i}. {s['niche']} in {s['city']} — Daily 8AM\n"
     update.message.reply_text(msg)
 
 
 def cmd_status(update: Update, context: CallbackContext):
     if update.effective_user.id != TELEGRAM_USER_ID:
         return
-    msg = (
+    update.message.reply_text(
         f"BOT STATUS\n\n"
-        f"Status: Running\n"
-        f"Credits used today: {credits_used}/1000\n"
-        f"Credits remaining: {1000 - credits_used}\n"
-        f"Min weakness score: {MIN_SCORE}/10\n"
+        f"Running: Yes\n"
+        f"Credits used: {credits_used}/1000\n"
+        f"Credits left: {1000 - credits_used}\n"
+        f"Min score: {MIN_SCORE}/10\n"
         f"Scheduled scans: {len(scheduled_scans)}"
     )
-    update.message.reply_text(msg)
 
 
 def cmd_export(update: Update, context: CallbackContext):
     if update.effective_user.id != TELEGRAM_USER_ID:
         return
     update.message.reply_text(
-        f"All leads are in your Google Sheet.\n\n"
-        f"Credits used today: {credits_used}/1000\n"
-        f"Credits remaining: {1000 - credits_used}"
+        f"Check your Google Sheet for all leads.\n"
+        f"Credits used: {credits_used}/1000"
     )
 
 
-# ─── Schedule Runner ─────────────────────────────────────
 def run_scheduler():
     while True:
         schedule.run_pending()
         time.sleep(60)
 
 
-# ─── Main ────────────────────────────────────────────────
 def main():
     logger.info("Maps Lead Bot starting...")
-
     updater = Updater(token=TELEGRAM_BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
 
@@ -496,11 +473,7 @@ def main():
     dp.add_handler(CommandHandler("status", cmd_status))
     dp.add_handler(CommandHandler("export", cmd_export))
 
-    scheduler_thread = threading.Thread(
-        target=run_scheduler, daemon=True
-    )
-    scheduler_thread.start()
-
+    threading.Thread(target=run_scheduler, daemon=True).start()
     updater.start_polling()
     logger.info("Bot is running!")
 
@@ -509,16 +482,14 @@ def main():
         json={
             "chat_id": TELEGRAM_USER_ID,
             "text": (
-                "MAPS LEAD BOT IS LIVE\n\n"
-                "Send /start to see commands\n\n"
-                "Try:\n"
-                "/scan salon lagos\n"
-                "/scan barber houston\n"
-                "/scan clinic abuja"
+                "MAPS LEAD BOT LIVE\n\n"
+                "Each lead = 6 separate messages:\n"
+                "1. Lead info\n2. Phone\n3. WhatsApp link\n"
+                "4. Maps link\n5. Pitch\n6. DeepSite prompt\n\n"
+                "Try: /scan salon lagos"
             )
         }
     )
-
     updater.idle()
 
 
