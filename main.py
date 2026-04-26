@@ -311,6 +311,19 @@ h2 {{ color: #d4af37; font-size: 1.8em; margin-bottom: 30px; text-align: center;
 .contact-info {{ background: #1a1a1a; padding: 30px; border-radius: 12px; text-align: center; }}
 .contact-info p {{ margin: 10px 0; color: #ccc; font-size: 1em; }}
 .contact-info .wa-btn {{ margin-top: 20px; font-size: 1.2em; padding: 18px 40px; }}
+@keyframes fadeIn {{
+    from {{ opacity: 0; transform: translateY(20px); }}
+    to {{ opacity: 1; transform: translateY(0); }}
+}}
+@keyframes pulse {{
+    0% {{ transform: scale(1); }}
+    50% {{ transform: scale(1.05); }}
+    100% {{ transform: scale(1); }}
+}}
+.hero {{ animation: fadeIn 1s ease forwards; }}
+.service-card {{ animation: fadeIn 0.8s ease forwards; }}
+.wa-btn {{ animation: pulse 2s infinite; }}
+* {{ scroll-behavior: smooth; }}
 </style>
 </head>
 <body>
