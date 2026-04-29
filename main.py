@@ -247,17 +247,19 @@ def format_wa_link(phone):
 # ─── Pitch Generator ─────────────────────────────────────
 def generate_pitch(business_name, niche, city):
     try:
-        prompt = f"""Write a short outreach message to a {niche} business owner in {city}.
+        prompt = f"""Write a WhatsApp cold outreach message to a {niche} business owner in {city}.
 
 Rules:
-- Under 50 words total
-- Mention you already built a website preview for them
-- Say they can see it before deciding anything
-- End with one simple question
-- Sound human, not salesy
-- No emojis, no exclamation marks
+- Maximum 3 sentences
+- First sentence: mention you found them on Google Maps
+- Second sentence: tell them you already built a free website preview for them
+- Third sentence: ask if you can send the link
+- Never say "follow up", "checking in", "just wanted"
+- Sound like a real person not a salesman
+- No emojis
 
 Write ONLY the message."""
+        
 
         response = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
@@ -794,11 +796,18 @@ def run_scan(bot, chat_id, niche, city, country_code="us"):
         try:
             name = business.get("title", "Unknown")
             address = business.get("address", "N/A")
+            
             place_id = business.get("place_id", "")
-            maps_link = (
-                f"https://www.google.com/maps?cid={place_id}"
-                if place_id else ""
-            )
+gps = business.get("gps_coordinates", {}) or {}
+lat = gps.get("latitude", "")
+lng = gps.get("longitude", "")
+
+if place_id:
+    maps_link = f"https://www.google.com/maps?cid={place_id}"
+elif lat and lng:
+    maps_link = f"https://www.google.com/maps?q={lat},{lng}"
+else:
+    maps_link = f"https://www.google.com/maps/search/{name.replace(' ', '+')}+{city.replace(' ', '+')}"
             phone = business.get("phone", "") or ""
             description = business.get("description", "") or ""
             hours = business.get("hours", "") or ""
