@@ -2,6 +2,7 @@ import os
 import json
 import time
 import logging
+import random
 import requests
 import schedule
 import threading
@@ -24,6 +25,7 @@ SCRAPINGDOG_API_KEY = os.environ["SCRAPINGDOG_API_KEY"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 GOOGLE_SHEET_ID = os.environ["GOOGLE_SHEET_ID"]
 SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+NETLIFY_TOKEN = os.environ["NETLIFY_TOKEN"]
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
@@ -31,58 +33,36 @@ MIN_SCORE = 3
 scheduled_scans = []
 credits_used = 0
 
-# ─── City/Country Detection ──────────────────────────────
 NIGERIA_CITIES = [
     "lagos", "abuja", "ibadan", "kano", "port harcourt",
     "benin", "enugu", "kaduna", "owerri", "warri",
     "calabar", "jos", "ilorin", "abeokuta", "onitsha",
     "uyo", "asaba", "maiduguri", "zaria", "sokoto"
 ]
-
 US_CITIES = [
     "new york", "los angeles", "chicago", "houston", "phoenix",
     "philadelphia", "san antonio", "san diego", "dallas", "san jose",
-    "austin", "jacksonville", "miami", "atlanta", "boston",
-    "seattle", "denver", "nashville", "portland", "las vegas",
-    "memphis", "louisville", "baltimore", "milwaukee", "albuquerque",
-    "tucson", "fresno", "sacramento", "mesa", "kansas city",
-    "malibu", "beverly hills", "santa monica", "brooklyn", "manhattan"
+    "austin", "miami", "atlanta", "boston", "seattle", "denver",
+    "nashville", "las vegas", "malibu", "beverly hills", "brooklyn"
 ]
-
 CANADA_CITIES = [
     "toronto", "vancouver", "montreal", "calgary", "edmonton",
-    "ottawa", "winnipeg", "quebec", "hamilton", "kitchener",
-    "london", "victoria", "halifax", "saskatoon", "regina"
+    "ottawa", "winnipeg", "quebec", "hamilton", "victoria"
 ]
-
 UK_CITIES = [
     "london", "birmingham", "manchester", "glasgow", "leeds",
-    "liverpool", "edinburgh", "bristol", "sheffield", "leicester"
-]
-
-# ─── High Value Niches ───────────────────────────────────
-HIGH_VALUE_NICHES = [
-    "dentist", "dental", "clinic", "doctor", "medical",
-    "salon", "spa", "barbershop", "barber",
-    "restaurant", "cafe", "hotel",
-    "real estate", "realtor", "lawyer", "attorney",
-    "gym", "fitness", "physiotherapy",
-    "pharmacy", "optician", "veterinary",
-    "plumber", "electrician", "contractor",
-    "accountant", "insurance", "mortgage"
+    "liverpool", "edinburgh", "bristol", "sheffield"
 ]
 
 
 def detect_country(city):
-    city_lower = city.lower()
-    if city_lower in NIGERIA_CITIES:
+    c = city.lower()
+    if c in NIGERIA_CITIES:
         return "ng"
-    if city_lower in CANADA_CITIES:
+    if c in CANADA_CITIES:
         return "ca"
-    if city_lower in UK_CITIES:
+    if c in UK_CITIES:
         return "gb"
-    if city_lower in US_CITIES:
-        return "us"
     return "us"
 
 
@@ -94,27 +74,83 @@ def send_telegram(bot, chat_id, text):
         logger.error(f"Telegram error: {e}")
 
 
-def send_html_file(bot, chat_id, html_content, filename):
+# ─── Netlify Auto Deploy ──────────────────────────────────
+def deploy_to_netlify(html_content, site_name):
     try:
+        import base64
+        import zipfile
         import io
-        file_bytes = html_content.encode("utf-8")
-        file_obj = io.BytesIO(file_bytes)
-        file_obj.name = filename
-        bot.send_document(
-            chat_id=chat_id,
-            document=file_obj,
-            filename=filename,
-            caption=(
-                "WEBSITE FILE\n\n"
-                "1. Save this file\n"
-                "2. Go to netlify.com/drop\n"
-                "3. Upload file → get live URL\n"
-                "4. Rename to business name\n"
-                "5. Send URL in your pitch"
-            )
+
+        # Clean site name for Netlify
+        clean_name = (
+            site_name.lower()
+            .replace(" ", "-")
+            .replace("&", "and")
+            .replace("'", "")
+            .replace(",", "")
+            .replace(".", "")
+            [:35]
         )
+
+        # Create zip with index.html
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("index.html", html_content)
+        zip_buffer.seek(0)
+        zip_bytes = zip_buffer.read()
+
+        headers = {
+            "Authorization": f"Bearer {NETLIFY_TOKEN}",
+            "Content-Type": "application/zip"
+        }
+
+        # Create new site
+        create_resp = requests.post(
+            "https://api.netlify.com/api/v1/sites",
+            headers={"Authorization": f"Bearer {NETLIFY_TOKEN}",
+                     "Content-Type": "application/json"},
+            json={"name": clean_name}
+        )
+
+        if create_resp.status_code not in [200, 201]:
+            # Name taken — add random suffix
+            import random as r
+            clean_name = f"{clean_name}-{r.randint(100,999)}"
+            create_resp = requests.post(
+                "https://api.netlify.com/api/v1/sites",
+                headers={"Authorization": f"Bearer {NETLIFY_TOKEN}",
+                         "Content-Type": "application/json"},
+                json={"name": clean_name}
+            )
+
+        site_data = create_resp.json()
+        site_id = site_data.get("id")
+
+        if not site_id:
+            logger.error(f"Site creation failed: {site_data}")
+            return None
+
+        # Deploy zip to site
+        deploy_resp = requests.post(
+            f"https://api.netlify.com/api/v1/sites/{site_id}/deploys",
+            headers=headers,
+            data=zip_bytes
+        )
+
+        if deploy_resp.status_code in [200, 201]:
+            deploy_data = deploy_resp.json()
+            url = deploy_data.get("ssl_url") or deploy_data.get("url")
+            if url:
+                return url
+            # Fallback to site URL
+            return f"https://{clean_name}.netlify.app"
+        else:
+            logger.error(f"Deploy failed: {deploy_resp.text}")
+            return None
+
     except Exception as e:
-        logger.error(f"File send error: {e}")
+        logger.error(f"Netlify deploy error: {e}")
+        return None
 
 
 # ─── Google Sheets ───────────────────────────────────────
@@ -148,18 +184,14 @@ def search_maps(niche, city, country_code="us"):
     global credits_used
     try:
         url = "https://api.scrapingdog.com/google_local/"
-        if country_code == "ng":
-            query = f"{niche}+in+{city}+Nigeria"
-            location = f"{city}, Nigeria"
-        elif country_code == "ca":
-            query = f"{niche}+in+{city}+Canada"
-            location = f"{city}, Canada"
-        elif country_code == "gb":
-            query = f"{niche}+in+{city}+UK"
-            location = f"{city}, United Kingdom"
-        else:
-            query = f"{niche}+in+{city}"
-            location = f"{city}, USA"
+        locations = {
+            "ng": (f"{niche}+in+{city}+Nigeria", f"{city}, Nigeria"),
+            "ca": (f"{niche}+in+{city}+Canada", f"{city}, Canada"),
+            "gb": (f"{niche}+in+{city}+UK", f"{city}, United Kingdom"),
+            "us": (f"{niche}+in+{city}", f"{city}, USA")
+        }
+        query, location = locations.get(
+            country_code, locations["us"])
 
         params = {
             "api_key": SCRAPINGDOG_API_KEY,
@@ -206,7 +238,7 @@ def score_business(business):
 
     if reviews == 0:
         score += 2
-        issues.append("0 reviews on profile")
+        issues.append("0 reviews")
     elif reviews <= 15:
         score += 2
         issues.append(f"Only {reviews} reviews")
@@ -222,7 +254,7 @@ def score_business(business):
     description = business.get("description", "") or ""
     if not description or len(description) < 20:
         score += 1
-        issues.append("No business description")
+        issues.append("No description")
 
     thumbnail = business.get("thumbnail", "") or ""
     if not thumbnail:
@@ -244,79 +276,140 @@ def format_wa_link(phone):
     return f"https://wa.me/{clean}" if clean else ""
 
 
-# ─── Pitch Generator ─────────────────────────────────────
+# ─── Pitch (hardcoded — no Groq hallucinations) ──────────
 def generate_pitch(business_name, niche, city):
-    import random
     templates = [
         f"Hi, I found {business_name} on Google Maps while searching for a {niche} in {city}. I noticed you don't have a website so I built a free preview for you. Can I send you the link?",
-        f"Hi, I came across {business_name} on Google Maps. You don't have a website listed so I went ahead and created a preview for free. Want me to send the link?",
-        f"Hi, I found your {niche} on Google Maps and built a free website preview for {business_name}. No commitment needed — want to see it first?",
+        f"Hi, I came across {business_name} on Google Maps. You don't have a website listed so I went ahead and created a preview — completely free. Want me to send it?",
+        f"Hi, found your {niche} on Google Maps in {city}. I built a free website preview for {business_name} — no commitment needed. Want to see it?",
     ]
     return random.choice(templates)
-        
-
-        response = groq_client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=80,
-            temperature=0.6,
-        )
-        return response.choices[0].message.content.strip().strip('"')
-    except Exception as e:
-        logger.error(f"Groq pitch error: {e}")
-        return (
-            f"Hi, I found {business_name} on Google Maps and "
-            f"noticed you don't have a website. I already built "
-            f"a free preview for you. Want me to send the link?"
-        )
 
 
 # ─── Content Generator ───────────────────────────────────
 def generate_content(business_name, niche, city):
     try:
-        prompt = f"""Return ONLY a valid JSON object for a {niche} business. No extra text.
+        prompt = f"""You are generating website content. Return ONLY valid JSON. No explanation, no markdown, no extra text. Start with {{ and end with }}.
 
 {{
-  "tagline": "compelling one-line tagline for {business_name}",
-  "about": "2 professional sentences about this {niche} in {city}",
-  "s1_name": "service name", "s1_desc": "one line",
-  "s2_name": "service name", "s2_desc": "one line",
-  "s3_name": "service name", "s3_desc": "one line",
-  "s4_name": "service name", "s4_desc": "one line",
-  "s5_name": "service name", "s5_desc": "one line",
-  "w1_title": "strength", "w1_desc": "one line",
-  "w2_title": "strength", "w2_desc": "one line",
-  "w3_title": "strength", "w3_desc": "one line"
+  "tagline": "write a real compelling tagline for a {niche} business",
+  "about": "write 2 real professional sentences about {business_name}, a {niche} in {city}",
+  "s1_name": "write a real {niche} service name",
+  "s1_desc": "one line description",
+  "s2_name": "write a real {niche} service name",
+  "s2_desc": "one line description",
+  "s3_name": "write a real {niche} service name",
+  "s3_desc": "one line description",
+  "s4_name": "write a real {niche} service name",
+  "s4_desc": "one line description",
+  "s5_name": "write a real {niche} service name",
+  "s5_desc": "one line description",
+  "w1_title": "write a real strength of a {niche}",
+  "w1_desc": "one line",
+  "w2_title": "write a real strength of a {niche}",
+  "w2_desc": "one line",
+  "w3_title": "write a real strength of a {niche}",
+  "w3_desc": "one line"
 }}"""
 
         response = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=500,
-            temperature=0.5,
+            max_tokens=600,
+            temperature=0.4,
         )
         raw = response.choices[0].message.content.strip()
+
+        # Aggressive JSON extraction
         if "```" in raw:
-            raw = raw.split("```")[1].replace("json", "").strip()
+            parts = raw.split("```")
+            for part in parts:
+                part = part.replace("json", "").strip()
+                if part.startswith("{"):
+                    raw = part
+                    break
+
         start = raw.find("{")
         end = raw.rfind("}") + 1
         if start != -1 and end > start:
             raw = raw[start:end]
-        return json.loads(raw)
+
+        data = json.loads(raw)
+
+        # Validate — reject if any value contains
+        # placeholder-style text
+        bad_phrases = [
+            "write a", "your ", "insert", "example",
+            "placeholder", "one line description",
+            "one line"
+        ]
+        for key, val in data.items():
+            for bad in bad_phrases:
+                if bad.lower() in str(val).lower():
+                    raise ValueError(f"Placeholder detected: {val}")
+
+        return data
+
     except Exception as e:
         logger.error(f"Content generation error: {e}")
-        return {
-            "tagline": f"Premium {niche} services in {city}",
-            "about": f"{business_name} delivers exceptional {niche} services in {city}. We are committed to quality and customer satisfaction.",
-            "s1_name": "Expert Service", "s1_desc": "Professional care tailored to you",
-            "s2_name": "Quality Results", "s2_desc": "Consistent excellence every visit",
-            "s3_name": "Skilled Team", "s3_desc": "Experienced specialists at your service",
-            "s4_name": "Premium Experience", "s4_desc": "Comfortable and welcoming environment",
-            "s5_name": "Fast & Reliable", "s5_desc": "We value your time",
-            "w1_title": "Trusted Expertise", "w1_desc": "Years of experience in {niche}",
-            "w2_title": "Client First", "w2_desc": "Your satisfaction is everything",
-            "w3_title": "Always Available", "w3_desc": "Easy to reach, quick to respond"
+        # Niche-specific fallbacks
+        fallbacks = {
+            "dentist": {
+                "tagline": "Expert dental care for a healthier, brighter smile",
+                "about": f"{business_name} provides comprehensive dental services in {city}. Our experienced team is dedicated to your oral health and comfort.",
+                "s1_name": "General Checkup", "s1_desc": "Full dental examination and cleaning",
+                "s2_name": "Teeth Whitening", "s2_desc": "Professional whitening for a brighter smile",
+                "s3_name": "Dental Fillings", "s3_desc": "Painless cavity treatment and restoration",
+                "s4_name": "Root Canal", "s4_desc": "Expert endodontic treatment",
+                "s5_name": "Orthodontics", "s5_desc": "Braces and alignment solutions",
+                "w1_title": "Experienced Dentists", "w1_desc": "Qualified professionals with years of practice",
+                "w2_title": "Pain-Free Treatment", "w2_desc": "Modern techniques for comfortable care",
+                "w3_title": "Flexible Appointments", "w3_desc": "Book at a time that suits you"
+            },
+            "salon": {
+                "tagline": "Where every visit leaves you looking and feeling your best",
+                "about": f"{business_name} is a premium hair and beauty salon in {city}. We combine skill and creativity to deliver stunning results every time.",
+                "s1_name": "Haircut & Styling", "s1_desc": "Precision cuts and expert styling",
+                "s2_name": "Hair Coloring", "s2_desc": "Vibrant color treatments and highlights",
+                "s3_name": "Hair Treatment", "s3_desc": "Deep conditioning and repair treatments",
+                "s4_name": "Braiding & Weaves", "s4_desc": "All protective styles and weave installations",
+                "s5_name": "Facial & Skincare", "s5_desc": "Rejuvenating skin treatments",
+                "w1_title": "Skilled Stylists", "w1_desc": "Experienced professionals who love their craft",
+                "w2_title": "Premium Products", "w2_desc": "Only the best products used on your hair",
+                "w3_title": "Relaxing Atmosphere", "w3_desc": "A calm and welcoming space for every client"
+            },
+            "barbershop": {
+                "tagline": "Clean cuts and sharp fades — every single time",
+                "about": f"{business_name} is the go-to barbershop in {city} for clean cuts and fresh styles. We take pride in precision and attention to detail.",
+                "s1_name": "Haircut", "s1_desc": "Precision cuts tailored to your style",
+                "s2_name": "Fade & Taper", "s2_desc": "Clean fades from skin to scissor",
+                "s3_name": "Beard Trim", "s3_desc": "Shape and define your beard",
+                "s4_name": "Hot Towel Shave", "s4_desc": "Classic straight razor shave",
+                "s5_name": "Kids Cut", "s5_desc": "Patient and fun cuts for children",
+                "w1_title": "Master Barbers", "w1_desc": "Skilled barbers with years of experience",
+                "w2_title": "No Wait Policy", "w2_desc": "Appointments available to save your time",
+                "w3_title": "Clean & Hygienic", "w3_desc": "Fully sanitized tools for every client"
+            }
         }
+
+        niche_lower = niche.lower()
+        for key in fallbacks:
+            if key in niche_lower:
+                return fallbacks[key]
+
+        return {
+            "tagline": f"Professional {niche} services you can trust in {city}",
+            "about": f"{business_name} delivers exceptional {niche} services in {city}. We are committed to quality, reliability and complete customer satisfaction.",
+            "s1_name": "Core Service", "s1_desc": "Our signature professional service",
+            "s2_name": "Premium Package", "s2_desc": "Enhanced service for best results",
+            "s3_name": "Consultation", "s3_desc": "Expert advice tailored to your needs",
+            "s4_name": "Express Service", "s4_desc": "Quick and efficient same-day service",
+            "s5_name": "Aftercare Support", "s5_desc": "Ongoing support after every service",
+            "w1_title": "Experienced Team", "w1_desc": "Qualified professionals dedicated to excellence",
+            "w2_title": "Quality Guaranteed", "w2_desc": "We stand behind every service we deliver",
+            "w3_title": "Customer First", "w3_desc": "Your satisfaction is our top priority"
+        }
+
 
 # ─── HTML Builder ─────────────────────────────────────────
 def build_html(business_name, niche, city, phone,
@@ -326,27 +419,25 @@ def build_html(business_name, niche, city, phone,
         .replace("-", "").replace("(", "").replace(")", "")
         if phone else ""
     )
-    wa_link = f"https://wa.me/{wa_number}" if wa_number else "https://wa.me/"
+    wa_link = f"https://wa.me/{wa_number}" if wa_number else "#"
     hours_text = hours if hours else "Mon–Sat: 9AM–7PM  |  Sun: 10AM–5PM"
-    address_text = (
-        address if address and address != "N/A" else city
-    )
+    address_text = address if address and address != "N/A" else city
 
     c = generate_content(business_name, niche, city)
 
     icons = {
-        "dentist": "🦷", "dental": "🦷", "salon": "✂️", "spa": "💆",
-        "barber": "💈", "barbershop": "💈", "restaurant": "🍽️",
-        "cafe": "☕", "hotel": "🏨", "clinic": "🏥", "doctor": "👨‍⚕️",
-        "gym": "💪", "fitness": "🏋️", "pharmacy": "💊",
-        "real estate": "🏠", "realtor": "🏠", "lawyer": "⚖️",
-        "plumber": "🔧", "electrician": "⚡", "contractor": "🔨"
+        "dentist": "🦷", "dental": "🦷", "salon": "✂️",
+        "spa": "💆", "barber": "💈", "barbershop": "💈",
+        "restaurant": "🍽️", "cafe": "☕", "hotel": "🏨",
+        "clinic": "🏥", "doctor": "👨‍⚕️", "gym": "💪",
+        "fitness": "🏋️", "pharmacy": "💊", "real estate": "🏠",
+        "realtor": "🏠", "lawyer": "⚖️", "plumber": "🔧",
+        "electrician": "⚡", "contractor": "🔨"
     }
     niche_icon = icons.get(niche.lower(), "⭐")
+    s_icons = ["✂️", "💆", "✨", "💅", "🌟"]
 
-    service_icons = ["✂️", "💆", "✨", "💅", "🌟"]
-
-    return f"""<!DOCTYPE html>
+        return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -354,304 +445,81 @@ def build_html(business_name, niche, city, phone,
 <title>{business_name}</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box;scroll-behavior:smooth}}
-body{{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:#0c0c0c;color:#fff;overflow-x:hidden}}
+body{{font-family:'Segoe UI',system-ui,sans-serif;background:#f8f8f6;color:#1a1a1a;overflow-x:hidden}}
 
-/* ── ANIMATIONS ── */
-@keyframes fadeUp{{
-  from{{opacity:0;transform:translateY(40px)}}
-  to{{opacity:1;transform:translateY(0)}}
-}}
-@keyframes fadeIn{{
-  from{{opacity:0}}to{{opacity:1}}
-}}
-@keyframes slideRight{{
-  from{{opacity:0;transform:translateX(-30px)}}
-  to{{opacity:1;transform:translateX(0)}}
-}}
-@keyframes pulse{{
-  0%,100%{{transform:scale(1);box-shadow:0 8px 30px rgba(37,211,102,0.3)}}
-  50%{{transform:scale(1.04);box-shadow:0 12px 40px rgba(37,211,102,0.5)}}
-}}
-@keyframes float{{
-  0%,100%{{transform:translateY(0)}}
-  50%{{transform:translateY(-8px)}}
-}}
-@keyframes gradientShift{{
-  0%{{background-position:0% 50%}}
-  50%{{background-position:100% 50%}}
-  100%{{background-position:0% 50%}}
-}}
-@keyframes shimmer{{
-  0%{{opacity:0.5}}50%{{opacity:1}}100%{{opacity:0.5}}
-}}
-@keyframes scaleIn{{
-  from{{opacity:0;transform:scale(0.9)}}
-  to{{opacity:1;transform:scale(1)}}
-}}
+@keyframes fadeUp{{from{{opacity:0;transform:translateY(30px)}}to{{opacity:1;transform:translateY(0)}}}}
+@keyframes fadeIn{{from{{opacity:0}}to{{opacity:1}}}}
+@keyframes pulse{{0%,100%{{transform:scale(1);box-shadow:0 6px 25px rgba(37,211,102,0.35)}}50%{{transform:scale(1.04);box-shadow:0 10px 35px rgba(37,211,102,0.5)}}}}
+@keyframes float{{0%,100%{{transform:translateY(0)}}50%{{transform:translateY(-7px)}}}}
 
-/* ── SCROLL ANIMATIONS ── */
-.reveal{{opacity:0;transform:translateY(30px);transition:all 0.7s ease}}
+.reveal{{opacity:0;transform:translateY(25px);transition:all 0.65s ease}}
 .reveal.visible{{opacity:1;transform:translateY(0)}}
-.reveal-left{{opacity:0;transform:translateX(-30px);transition:all 0.7s ease}}
+.reveal-left{{opacity:0;transform:translateX(-25px);transition:all 0.65s ease}}
 .reveal-left.visible{{opacity:1;transform:translateX(0)}}
-.reveal-scale{{opacity:0;transform:scale(0.95);transition:all 0.6s ease}}
+.reveal-scale{{opacity:0;transform:scale(0.95);transition:all 0.55s ease}}
 .reveal-scale.visible{{opacity:1;transform:scale(1)}}
 
-/* ── NAV ── */
-nav{{
-  position:fixed;top:0;width:100%;
-  background:rgba(12,12,12,0.92);
-  backdrop-filter:blur(20px);
-  padding:14px 24px;z-index:1000;
-  border-bottom:1px solid rgba(212,175,55,0.15);
-  animation:fadeIn 0.5s ease forwards
-}}
-.nav-inner{{
-  display:flex;justify-content:space-between;
-  align-items:center;max-width:960px;margin:0 auto
-}}
-.logo{{
-  color:#d4af37;font-weight:800;font-size:1.05em;
-  letter-spacing:0.5px
-}}
-.nav-cta{{
-  background:linear-gradient(135deg,#25D366,#128C7E);
-  color:#fff;padding:9px 20px;border-radius:50px;
-  text-decoration:none;font-size:0.85em;font-weight:700;
-  transition:transform 0.2s ease
-}}
-.nav-cta:hover{{transform:scale(1.05)}}
+nav{{position:fixed;top:0;width:100%;background:rgba(255,255,255,0.97);backdrop-filter:blur(12px);padding:14px 24px;z-index:1000;border-bottom:1px solid #eee;box-shadow:0 2px 12px rgba(0,0,0,0.06);animation:fadeIn 0.5s ease}}
+.nav-inner{{display:flex;justify-content:space-between;align-items:center;max-width:960px;margin:0 auto}}
+.logo{{font-weight:800;font-size:1.05em;color:#1a1a1a}}
+.nav-cta{{background:#25D366;color:#fff;padding:9px 20px;border-radius:50px;text-decoration:none;font-size:0.85em;font-weight:700}}
 
-/* ── HERO ── */
-.hero{{
-  min-height:100vh;
-  background:linear-gradient(135deg,#0c0c0c 0%,#141414 40%,#0c0c0c 100%);
-  display:flex;flex-direction:column;
-  justify-content:center;align-items:center;
-  text-align:center;padding:110px 24px 80px;
-  position:relative;overflow:hidden
-}}
-.hero::before{{
-  content:'';position:absolute;
-  top:-50%;left:-50%;width:200%;height:200%;
-  background:radial-gradient(ellipse at 60% 40%,rgba(212,175,55,0.06) 0%,transparent 60%);
-  animation:gradientShift 8s ease infinite;
-  background-size:300% 300%
-}}
-.hero::after{{
-  content:'';position:absolute;
-  bottom:0;left:0;right:0;height:1px;
-  background:linear-gradient(90deg,transparent,rgba(212,175,55,0.3),transparent)
-}}
-.hero-badge{{
-  background:rgba(212,175,55,0.12);
-  border:1px solid rgba(212,175,55,0.35);
-  color:#d4af37;padding:7px 18px;
-  border-radius:50px;font-size:0.75em;
-  letter-spacing:3px;text-transform:uppercase;
-  margin-bottom:28px;
-  animation:fadeIn 0.8s ease 0.1s both;
-  display:inline-block
-}}
-.hero-icon{{
-  font-size:3.5em;margin-bottom:20px;
-  animation:float 3s ease-in-out infinite;
-  display:block
-}}
-.hero h1{{
-  font-size:clamp(2.2em,7vw,4em);
-  font-weight:900;line-height:1.05;
-  margin-bottom:18px;
-  background:linear-gradient(135deg,#ffffff 0%,#f0e0a0 50%,#d4af37 100%);
-  -webkit-background-clip:text;
-  -webkit-text-fill-color:transparent;
-  background-clip:text;
-  animation:fadeUp 0.8s ease 0.2s both
-}}
-.hero-sub{{
-  font-size:1.15em;color:#999;
-  max-width:480px;line-height:1.7;
-  margin-bottom:44px;
-  animation:fadeUp 0.8s ease 0.4s both
-}}
-.hero-btns{{
-  display:flex;flex-direction:column;
-  gap:14px;align-items:center;
-  animation:fadeUp 0.8s ease 0.6s both
-}}
-.btn-primary{{
-  background:linear-gradient(135deg,#25D366,#128C7E);
-  color:#fff;padding:17px 40px;
-  border-radius:50px;text-decoration:none;
-  font-size:1.05em;font-weight:700;
-  animation:pulse 2.5s ease-in-out infinite;
-  display:inline-flex;align-items:center;gap:10px
-}}
-.btn-secondary{{
-  color:#d4af37;
-  border:1px solid rgba(212,175,55,0.35);
-  padding:14px 32px;border-radius:50px;
-  text-decoration:none;font-size:0.95em;
-  transition:all 0.3s ease
-}}
-.btn-secondary:hover{{
-  background:rgba(212,175,55,0.08);
-  border-color:rgba(212,175,55,0.6)
-}}
+.hero{{min-height:100vh;background:linear-gradient(150deg,#1a1a2e 0%,#16213e 50%,#0f3460 100%);display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;padding:110px 24px 80px;position:relative;overflow:hidden}}
+.hero::before{{content:'';position:absolute;top:0;left:0;right:0;bottom:0;background:radial-gradient(ellipse at 60% 30%,rgba(255,255,255,0.04) 0%,transparent 65%)}}
+.hero-badge{{background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);color:#fff;padding:7px 18px;border-radius:50px;font-size:0.75em;letter-spacing:2px;text-transform:uppercase;margin-bottom:24px;display:inline-block;animation:fadeIn 0.7s ease 0.1s both}}
+.hero-icon{{font-size:3.2em;margin-bottom:18px;display:block;animation:float 3s ease-in-out infinite}}
+.hero h1{{font-size:clamp(2em,6.5vw,3.8em);font-weight:900;color:#fff;line-height:1.08;margin-bottom:16px;animation:fadeUp 0.8s ease 0.2s both}}
+.hero-sub{{font-size:1.1em;color:rgba(255,255,255,0.7);max-width:460px;line-height:1.7;margin-bottom:40px;animation:fadeUp 0.8s ease 0.4s both}}
+.hero-btns{{display:flex;flex-direction:column;gap:12px;align-items:center;animation:fadeUp 0.8s ease 0.6s both}}
+.btn-primary{{background:#25D366;color:#fff;padding:16px 38px;border-radius:50px;text-decoration:none;font-size:1.02em;font-weight:700;animation:pulse 2.5s ease-in-out infinite;display:inline-flex;align-items:center;gap:8px}}
+.btn-secondary{{color:rgba(255,255,255,0.8);border:1px solid rgba(255,255,255,0.25);padding:13px 30px;border-radius:50px;text-decoration:none;font-size:0.92em;transition:all 0.3s}}
+.btn-secondary:hover{{background:rgba(255,255,255,0.08)}}
 
-/* ── ABOUT ── */
-.about{{
-  background:#111;padding:80px 24px;
-  border-top:1px solid rgba(255,255,255,0.04)
-}}
-.about-inner{{
-  max-width:960px;margin:0 auto;
-  display:grid;grid-template-columns:1fr 1fr;
-  gap:48px;align-items:center
-}}
-.section-tag{{
-  color:#d4af37;font-size:0.75em;
-  letter-spacing:3px;text-transform:uppercase;
-  margin-bottom:12px;display:block
-}}
-h2{{
-  font-size:clamp(1.7em,4vw,2.4em);
-  font-weight:800;margin-bottom:20px;
-  line-height:1.2
-}}
-.about-text p{{
-  color:#aaa;line-height:1.85;font-size:1.02em
-}}
-.badges{{
-  display:grid;grid-template-columns:1fr 1fr;gap:16px;
-  margin-top:20px
-}}
-.badge{{
-  background:#1a1a1a;border:1px solid rgba(212,175,55,0.15);
-  border-radius:12px;padding:20px;text-align:center
-}}
-.badge-icon{{font-size:1.6em;margin-bottom:8px;display:block}}
-.badge-text{{color:#aaa;font-size:0.82em}}
-@media(max-width:640px){{
-  .about-inner{{grid-template-columns:1fr}}
-}}
+.about{{background:#fff;padding:80px 24px}}
+.about-inner{{max-width:960px;margin:0 auto;display:grid;grid-template-columns:1.2fr 1fr;gap:48px;align-items:center}}
+.section-tag{{color:#0f3460;font-size:0.72em;letter-spacing:3px;text-transform:uppercase;margin-bottom:10px;display:block;font-weight:700}}
+h2{{font-size:clamp(1.6em,3.5vw,2.2em);font-weight:800;margin-bottom:18px;line-height:1.2;color:#1a1a1a}}
+.about p{{color:#666;line-height:1.85;font-size:1em}}
+.badges{{display:grid;grid-template-columns:1fr 1fr;gap:14px}}
+.badge{{background:#f8f8f6;border:1px solid #eee;border-radius:14px;padding:20px;text-align:center;transition:all 0.3s}}
+.badge:hover{{border-color:#0f3460;transform:translateY(-3px)}}
+.badge-icon{{font-size:1.5em;margin-bottom:6px;display:block}}
+.badge-text{{color:#888;font-size:0.8em;font-weight:500}}
+@media(max-width:640px){{.about-inner{{grid-template-columns:1fr}}}}
 
-/* ── SERVICES ── */
-.services{{padding:80px 24px;max-width:960px;margin:0 auto}}
-.services-grid{{
-  display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
-  gap:20px;margin-top:8px
-}}
-.service-card{{
-  background:#111;
-  border:1px solid rgba(212,175,55,0.12);
-  border-radius:18px;padding:30px;
-  position:relative;overflow:hidden;
-  transition:all 0.35s ease;cursor:default
-}}
-.service-card::before{{
-  content:'';position:absolute;
-  top:0;left:0;width:100%;height:2px;
-  background:linear-gradient(90deg,#d4af37,transparent)
-}}
-.service-card:hover{{
-  border-color:rgba(212,175,55,0.35);
-  transform:translateY(-6px);
-  box-shadow:0 20px 40px rgba(0,0,0,0.4)
-}}
-.service-icon{{
-  width:48px;height:48px;
-  background:rgba(212,175,55,0.1);
-  border-radius:12px;display:flex;
-  align-items:center;justify-content:center;
-  font-size:1.4em;margin-bottom:18px
-}}
-.service-card h3{{
-  font-size:1.05em;font-weight:700;
-  margin-bottom:10px;color:#fff
-}}
-.service-card p{{color:#888;font-size:0.9em;line-height:1.6}}
+.services{{background:#f8f8f6;padding:80px 24px}}
+.services-inner{{max-width:960px;margin:0 auto}}
+.services-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:18px;margin-top:8px}}
+.service-card{{background:#fff;border:1px solid #eee;border-radius:16px;padding:28px;transition:all 0.3s;position:relative;overflow:hidden}}
+.service-card::before{{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,#0f3460,#533483)}}
+.service-card:hover{{border-color:#ddd;transform:translateY(-5px);box-shadow:0 16px 40px rgba(0,0,0,0.08)}}
+.service-icon{{width:46px;height:46px;background:#f0f4ff;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:1.3em;margin-bottom:16px}}
+.service-card h3{{font-size:1.02em;font-weight:700;margin-bottom:8px;color:#1a1a1a}}
+.service-card p{{color:#888;font-size:0.88em;line-height:1.6}}
 
-/* ── WHY ── */
-.why{{
-  background:#111;padding:80px 24px;
-  border-top:1px solid rgba(255,255,255,0.04)
-}}
+.why{{background:#fff;padding:80px 24px}}
 .why-inner{{max-width:960px;margin:0 auto}}
-.why-grid{{
-  display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
-  gap:24px
-}}
-.why-card{{
-  background:#161616;border-radius:18px;
-  padding:36px 24px;text-align:center;
-  border:1px solid rgba(255,255,255,0.05);
-  transition:all 0.35s ease
-}}
-.why-card:hover{{
-  border-color:rgba(212,175,55,0.2);
-  transform:translateY(-4px)
-}}
-.why-icon{{
-  font-size:2.4em;margin-bottom:18px;
-  display:block;animation:float 3s ease-in-out infinite
-}}
-.why-card:nth-child(2) .why-icon{{animation-delay:0.5s}}
-.why-card:nth-child(3) .why-icon{{animation-delay:1s}}
-.why-card h3{{
-  color:#d4af37;margin-bottom:10px;
-  font-size:1.05em;font-weight:700
-}}
-.why-card p{{color:#888;font-size:0.9em;line-height:1.5}}
+.why-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:22px}}
+.why-card{{background:#f8f8f6;border-radius:16px;padding:32px 22px;text-align:center;border:1px solid #eee;transition:all 0.3s}}
+.why-card:hover{{border-color:#0f3460;transform:translateY(-4px);box-shadow:0 12px 30px rgba(0,0,0,0.07)}}
+.why-icon{{font-size:2.2em;margin-bottom:14px;display:block;animation:float 3s ease-in-out infinite}}
+.why-card:nth-child(2) .why-icon{{animation-delay:0.6s}}
+.why-card:nth-child(3) .why-icon{{animation-delay:1.2s}}
+.why-card h3{{color:#0f3460;margin-bottom:8px;font-size:1em;font-weight:700}}
+.why-card p{{color:#888;font-size:0.88em;line-height:1.5}}
 
-/* ── CONTACT ── */
-.contact{{padding:80px 24px;max-width:960px;margin:0 auto}}
-.contact-card{{
-  background:linear-gradient(135deg,#111 0%,#161616 100%);
-  border:1px solid rgba(212,175,55,0.2);
-  border-radius:24px;padding:52px 32px;
-  text-align:center;position:relative;overflow:hidden
-}}
-.contact-card::before{{
-  content:'';position:absolute;
-  top:-50%;left:-50%;width:200%;height:200%;
-  background:radial-gradient(ellipse at center,rgba(212,175,55,0.04) 0%,transparent 60%)
-}}
-.contact-items{{
-  display:flex;flex-direction:column;
-  gap:16px;margin:32px 0;align-items:center
-}}
-.contact-item{{
-  display:flex;align-items:center;
-  gap:14px;color:#bbb;font-size:1em
-}}
-.c-icon{{
-  background:rgba(212,175,55,0.1);
-  border-radius:10px;width:40px;height:40px;
-  display:flex;align-items:center;
-  justify-content:center;font-size:1.1em;
-  flex-shrink:0
-}}
-.btn-wa-big{{
-  background:linear-gradient(135deg,#25D366,#128C7E);
-  color:#fff;padding:20px 48px;
-  border-radius:50px;text-decoration:none;
-  font-size:1.15em;font-weight:800;
-  display:inline-flex;align-items:center;gap:12px;
-  animation:pulse 2.5s ease-in-out infinite;
-  margin-top:8px
-}}
+.contact{{background:#f8f8f6;padding:80px 24px}}
+.contact-inner{{max-width:700px;margin:0 auto}}
+.contact-card{{background:linear-gradient(135deg,#1a1a2e,#0f3460);border-radius:24px;padding:52px 32px;text-align:center;color:#fff}}
+.contact-card h2{{color:#fff;margin-bottom:8px}}
+.contact-card .section-tag{{color:rgba(255,255,255,0.6)}}
+.contact-items{{display:flex;flex-direction:column;gap:14px;margin:28px 0;align-items:center}}
+.contact-item{{display:flex;align-items:center;gap:12px;color:rgba(255,255,255,0.85);font-size:0.97em}}
+.c-icon{{background:rgba(255,255,255,0.1);border-radius:10px;width:38px;height:38px;display:flex;align-items:center;justify-content:center;font-size:1em;flex-shrink:0}}
+.btn-wa-big{{background:#25D366;color:#fff;padding:18px 44px;border-radius:50px;text-decoration:none;font-size:1.1em;font-weight:800;display:inline-flex;align-items:center;gap:10px;animation:pulse 2.5s ease-in-out infinite;margin-top:8px}}
 
-/* ── FOOTER ── */
-footer{{
-  background:#080808;
-  border-top:1px solid rgba(255,255,255,0.04);
-  padding:28px 24px;text-align:center;
-  color:#444;font-size:0.82em
-}}
-footer span{{color:#d4af37}}
+footer{{background:#1a1a1a;padding:24px;text-align:center;color:#666;font-size:0.82em}}
+footer span{{color:#aaa}}
 </style>
 </head>
 <body>
@@ -667,10 +535,10 @@ footer span{{color:#d4af37}}
   <span class="hero-icon">{niche_icon}</span>
   <span class="hero-badge">{niche.title()} · {city}</span>
   <h1>{business_name}</h1>
-  <p class="hero-sub">{c.get('tagline', f'Professional {niche} services in {city}')}</p>
+  <p class="hero-sub">{c.get('tagline','Professional services you can trust')}</p>
   <div class="hero-btns">
     <a href="{wa_link}" class="btn-primary">💬 Book on WhatsApp</a>
-    <a href="#services" class="btn-secondary">Explore Services ↓</a>
+    <a href="#services" class="btn-secondary">Our Services ↓</a>
   </div>
 </section>
 
@@ -679,28 +547,30 @@ footer span{{color:#d4af37}}
     <div class="reveal-left">
       <span class="section-tag">About Us</span>
       <h2>Who We Are</h2>
-      <p>{c.get('about', f'{business_name} provides top-quality {niche} services in {city}.')}</p>
+      <p>{c.get('about','We are committed to delivering excellent service.')}</p>
     </div>
     <div class="badges reveal">
       <div class="badge"><span class="badge-icon">⭐</span><div class="badge-text">Top Rated</div></div>
       <div class="badge"><span class="badge-icon">📍</span><div class="badge-text">{city}</div></div>
-      <div class="badge"><span class="badge-icon">✅</span><div class="badge-text">Verified</div></div>
+      <div class="badge"><span class="badge-icon">✅</span><div class="badge-text">Trusted</div></div>
       <div class="badge"><span class="badge-icon">💬</span><div class="badge-text">Fast Reply</div></div>
     </div>
   </div>
 </div>
 
 <section class="services" id="services">
-  <div class="reveal">
-    <span class="section-tag">What We Offer</span>
-    <h2>Our Services</h2>
-  </div>
-  <div class="services-grid">
-    <div class="service-card reveal"><div class="service-icon">{service_icons[0]}</div><h3>{c.get('s1_name','Service 1')}</h3><p>{c.get('s1_desc','Professional service')}</p></div>
-    <div class="service-card reveal"><div class="service-icon">{service_icons[1]}</div><h3>{c.get('s2_name','Service 2')}</h3><p>{c.get('s2_desc','Expert care')}</p></div>
-    <div class="service-card reveal"><div class="service-icon">{service_icons[2]}</div><h3>{c.get('s3_name','Service 3')}</h3><p>{c.get('s3_desc','Quality results')}</p></div>
-    <div class="service-card reveal"><div class="service-icon">{service_icons[3]}</div><h3>{c.get('s4_name','Service 4')}</h3><p>{c.get('s4_desc','Premium treatment')}</p></div>
-    <div class="service-card reveal"><div class="service-icon">{service_icons[4]}</div><h3>{c.get('s5_name','Service 5')}</h3><p>{c.get('s5_desc','Trusted quality')}</p></div>
+  <div class="services-inner">
+    <div class="reveal">
+      <span class="section-tag">What We Offer</span>
+      <h2>Our Services</h2>
+    </div>
+    <div class="services-grid">
+      <div class="service-card reveal"><div class="service-icon">{s_icons[0]}</div><h3>{c.get('s1_name','Service')}</h3><p>{c.get('s1_desc','Professional care')}</p></div>
+      <div class="service-card reveal"><div class="service-icon">{s_icons[1]}</div><h3>{c.get('s2_name','Service')}</h3><p>{c.get('s2_desc','Expert results')}</p></div>
+      <div class="service-card reveal"><div class="service-icon">{s_icons[2]}</div><h3>{c.get('s3_name','Service')}</h3><p>{c.get('s3_desc','Quality treatment')}</p></div>
+      <div class="service-card reveal"><div class="service-icon">{s_icons[3]}</div><h3>{c.get('s4_name','Service')}</h3><p>{c.get('s4_desc','Premium experience')}</p></div>
+      <div class="service-card reveal"><div class="service-icon">{s_icons[4]}</div><h3>{c.get('s5_name','Service')}</h3><p>{c.get('s5_desc','Trusted service')}</p></div>
+    </div>
   </div>
 </section>
 
@@ -719,68 +589,56 @@ footer span{{color:#d4af37}}
 </div>
 
 <section class="contact" id="contact">
-  <div class="reveal">
-    <span class="section-tag">Get In Touch</span>
-    <h2>Contact Us</h2>
-  </div>
-  <div class="contact-card reveal-scale">
-    <div class="contact-items">
-      <div class="contact-item"><span class="c-icon">📞</span><span>{phone if phone else 'Contact via WhatsApp'}</span></div>
-      <div class="contact-item"><span class="c-icon">📍</span><span>{address_text}</span></div>
-      <div class="contact-item"><span class="c-icon">🕐</span><span>{hours_text}</span></div>
+  <div class="contact-inner">
+    <div class="contact-card reveal-scale">
+      <span class="section-tag">Get In Touch</span>
+      <h2>Contact Us</h2>
+      <div class="contact-items">
+        <div class="contact-item"><span class="c-icon">📞</span><span>{phone if phone else 'Contact via WhatsApp'}</span></div>
+        <div class="contact-item"><span class="c-icon">📍</span><span>{address_text}</span></div>
+        <div class="contact-item"><span class="c-icon">🕐</span><span>{hours_text}</span></div>
+      </div>
+      <a href="{wa_link}" class="btn-wa-big">💬 Chat on WhatsApp</a>
     </div>
-    <a href="{wa_link}" class="btn-wa-big">💬 Chat on WhatsApp Now</a>
   </div>
 </section>
 
 <footer>
-  <p>© 2025 <span>{business_name}</span> · {city} · All rights reserved</p>
+  <p>© 2025 <span>{business_name}</span> · {city}</p>
 </footer>
 
 <script>
-// Scroll reveal animation
 const observer = new IntersectionObserver((entries) => {{
-  entries.forEach(entry => {{
-    if (entry.isIntersecting) {{
-      entry.target.classList.add('visible');
-    }}
+  entries.forEach(e => {{
+    if(e.isIntersecting) e.target.classList.add('visible');
   }});
-}}, {{ threshold: 0.1 }});
-
-document.querySelectorAll('.reveal, .reveal-left, .reveal-scale')
+}}, {{threshold: 0.12}});
+document.querySelectorAll('.reveal,.reveal-left,.reveal-scale')
   .forEach(el => observer.observe(el));
-
-// Smooth scroll for anchor links
-document.querySelectorAll('a[href^="#"]').forEach(anchor => {{
-  anchor.addEventListener('click', function(e) {{
+document.querySelectorAll('a[href^="#"]').forEach(a => {{
+  a.addEventListener('click', function(e) {{
     e.preventDefault();
-    const target = document.querySelector(this.getAttribute('href'));
-    if (target) target.scrollIntoView({{ behavior: 'smooth' }});
+    const t = document.querySelector(this.getAttribute('href'));
+    if(t) t.scrollIntoView({{behavior:'smooth'}});
   }});
 }});
 </script>
-
 </body>
 </html>"""
 
-# ─── Core Scan Function ──────────────────────────────────
+
+# ─── Core Scan ───────────────────────────────────────────
 def run_scan(bot, chat_id, niche, city, country_code="us"):
     global MIN_SCORE
-    send_telegram(
-        bot, chat_id,
-        f"Scanning {niche} in {city}...\nThis takes 1-2 minutes."
-    )
+    send_telegram(bot, chat_id,
+                  f"Scanning {niche} in {city}...")
 
     businesses = search_maps(niche, city, country_code)
 
     if not businesses:
-        send_telegram(
-            bot, chat_id,
-            f"No results for {niche} in {city}.\n\n"
-            f"Try:\n/scan salon lagos\n"
-            f"/scan dentist houston\n"
-            f"/scan clinic toronto"
-        )
+        send_telegram(bot, chat_id,
+                      f"No results for {niche} in {city}.\n"
+                      f"Try: /scan dentist houston")
         return
 
     weak_found = 0
@@ -790,18 +648,18 @@ def run_scan(bot, chat_id, niche, city, country_code="us"):
         try:
             name = business.get("title", "Unknown")
             address = business.get("address", "N/A")
-            
             place_id = business.get("place_id", "")
-gps = business.get("gps_coordinates", {}) or {}
-lat = gps.get("latitude", "")
-lng = gps.get("longitude", "")
+            gps = business.get("gps_coordinates", {}) or {}
+            lat = gps.get("latitude", "")
+            lng = gps.get("longitude", "")
 
-if place_id:
-    maps_link = f"https://www.google.com/maps?cid={place_id}"
-elif lat and lng:
-    maps_link = f"https://www.google.com/maps?q={lat},{lng}"
-else:
-    maps_link = f"https://www.google.com/maps/search/{name.replace(' ', '+')}+{city.replace(' ', '+')}"
+            if place_id:
+                maps_link = f"https://www.google.com/maps?cid={place_id}"
+            elif lat and lng:
+                maps_link = f"https://www.google.com/maps?q={lat},{lng}"
+            else:
+                maps_link = f"https://www.google.com/maps/search/{name.replace(' ', '+')}+{city.replace(' ', '+')}"
+
             phone = business.get("phone", "") or ""
             description = business.get("description", "") or ""
             hours = business.get("hours", "") or ""
@@ -809,7 +667,6 @@ else:
 
             score, issues, reviews, website = score_business(business)
 
-            # Quality filter — must have phone and no website
             if not phone:
                 continue
             if website:
@@ -842,37 +699,39 @@ else:
             time.sleep(1)
 
             # MSG 4 — Maps link
-            if maps_link:
-                send_telegram(bot, chat_id, maps_link)
+            send_telegram(bot, chat_id, maps_link)
             time.sleep(1)
 
             # MSG 5 — Pitch
             send_telegram(bot, chat_id, pitch)
             time.sleep(2)
 
-            # MSG 6 — HTML file
-            send_telegram(bot, chat_id,
-                          "Building website... 30 seconds")
+            # MSG 6 — Build + auto deploy
+            send_telegram(bot, chat_id, "Building and deploying site...")
             html = build_html(
                 name, niche, city, phone,
                 description=description,
                 hours=hours,
                 address=address
             )
-            safe = (
-                name.lower()
-                .replace(" ", "-")
-                .replace("&", "and")
-                .replace("'", "")
-                .replace(",", "")[:35]
-            )
-            send_html_file(bot, chat_id, html, f"{safe}.html")
+            site_url = deploy_to_netlify(html, name)
+
+            if site_url:
+                send_telegram(bot, chat_id,
+                    f"SITE LIVE\n\n"
+                    f"{site_url}\n\n"
+                    f"Send this link with your pitch."
+                )
+            else:
+                send_telegram(bot, chat_id,
+                    "Deploy failed — retry with /redeploy"
+                )
 
             now = datetime.now().strftime("%Y-%m-%d %H:%M")
             log_to_sheet([
                 now, name, niche, city, str(score),
                 str(reviews), phone, address,
-                maps_link, "Pending"
+                maps_link, site_url or "Deploy failed", "Pending"
             ])
 
             time.sleep(8)
@@ -883,9 +742,9 @@ else:
 
     send_telegram(bot, chat_id,
         f"SCAN COMPLETE\n"
-        f"Niche: {niche} in {city}\n"
+        f"{niche} in {city}\n"
         f"Scanned: {total}\n"
-        f"Qualified targets: {weak_found}\n"
+        f"Qualified: {weak_found}\n"
         f"Credits used: {credits_used}/1000"
     )
 
@@ -894,18 +753,15 @@ else:
 def cmd_start(update: Update, context: CallbackContext):
     if update.effective_user.id != TELEGRAM_USER_ID:
         return
-    msg = (
-        "MAPS LEAD BOT READY\n\n"
+    update.message.reply_text(
+        "MAPS LEAD BOT\n\n"
         "Commands:\n\n"
         "/scan [niche] [city]\n"
         "  /scan salon lagos\n"
         "  /scan dentist houston\n"
-        "  /scan clinic toronto\n"
-        "  /scan barber london\n\n"
-        "/setscore [number]\n"
-        "  Default: 3\n\n"
+        "  /scan clinic toronto\n\n"
+        "/setscore [number] — default 3\n"
         "/schedule [niche] [city]\n"
-        "  Auto scan every 8am\n\n"
         "/schedules\n"
         "/status\n"
         "/export\n\n"
@@ -915,9 +771,8 @@ def cmd_start(update: Update, context: CallbackContext):
         "3. WhatsApp link\n"
         "4. Maps link\n"
         "5. Pitch\n"
-        "6. HTML website file"
+        "6. Live site URL (auto deployed)"
     )
-    update.message.reply_text(msg)
 
 
 def cmd_scan(update: Update, context: CallbackContext):
@@ -927,7 +782,6 @@ def cmd_scan(update: Update, context: CallbackContext):
     if len(args) < 2:
         update.message.reply_text(
             "Usage: /scan [niche] [city]\n"
-            "Example: /scan salon lagos\n"
             "Example: /scan dentist houston"
         )
         return
@@ -936,12 +790,10 @@ def cmd_scan(update: Update, context: CallbackContext):
     bot = context.bot
     chat_id = update.effective_chat.id
     country_code = detect_country(city)
-
-    thread = threading.Thread(
+    threading.Thread(
         target=run_scan,
         args=(bot, chat_id, niche, city, country_code)
-    )
-    thread.start()
+    ).start()
 
 
 def cmd_setscore(update: Update, context: CallbackContext):
@@ -950,15 +802,13 @@ def cmd_setscore(update: Update, context: CallbackContext):
     global MIN_SCORE
     args = context.args
     if not args:
-        update.message.reply_text(
-            f"Current: {MIN_SCORE}\nUsage: /setscore 3"
-        )
+        update.message.reply_text(f"Current: {MIN_SCORE}")
         return
     try:
         MIN_SCORE = int(args[0])
         update.message.reply_text(f"Score set to {MIN_SCORE}/10")
     except:
-        update.message.reply_text("Enter a valid number.")
+        update.message.reply_text("Enter a number.")
 
 
 def cmd_schedule(update: Update, context: CallbackContext):
@@ -975,13 +825,12 @@ def cmd_schedule(update: Update, context: CallbackContext):
     bot = context.bot
     chat_id = update.effective_chat.id
     country_code = detect_country(city)
-
     scheduled_scans.append({"niche": niche, "city": city})
     schedule.every().day.at("08:00").do(
         run_scan, bot, chat_id, niche, city, country_code
     )
     update.message.reply_text(
-        f"Scheduled: {niche} in {city}\nDaily at 8:00 AM"
+        f"Scheduled: {niche} in {city} — Daily 8AM"
     )
 
 
@@ -989,11 +838,11 @@ def cmd_schedules(update: Update, context: CallbackContext):
     if update.effective_user.id != TELEGRAM_USER_ID:
         return
     if not scheduled_scans:
-        update.message.reply_text("No scheduled scans yet.")
+        update.message.reply_text("No scheduled scans.")
         return
     msg = "SCHEDULED:\n\n"
     for i, s in enumerate(scheduled_scans, 1):
-        msg += f"{i}. {s['niche']} in {s['city']} — 8AM\n"
+        msg += f"{i}. {s['niche']} in {s['city']}\n"
     update.message.reply_text(msg)
 
 
@@ -1003,8 +852,7 @@ def cmd_status(update: Update, context: CallbackContext):
     update.message.reply_text(
         f"STATUS\n\n"
         f"Running: Yes\n"
-        f"Credits used: {credits_used}/1000\n"
-        f"Credits left: {1000 - credits_used}\n"
+        f"Credits: {credits_used}/1000\n"
         f"Min score: {MIN_SCORE}/10\n"
         f"Scheduled: {len(scheduled_scans)}"
     )
@@ -1014,7 +862,7 @@ def cmd_export(update: Update, context: CallbackContext):
     if update.effective_user.id != TELEGRAM_USER_ID:
         return
     update.message.reply_text(
-        f"Check Google Sheet for all leads.\n"
+        f"Check Google Sheet.\n"
         f"Credits used: {credits_used}/1000"
     )
 
@@ -1048,16 +896,13 @@ def main():
             "chat_id": TELEGRAM_USER_ID,
             "text": (
                 "MAPS LEAD BOT LIVE\n\n"
-                "Premium HTML sites generated per lead\n"
-                "All animated, mobile-first, WhatsApp CTA\n\n"
-                "Try:\n"
-                "/scan salon lagos\n"
-                "/scan dentist houston\n"
-                "/scan clinic toronto"
+                "Auto deploys to Netlify\n"
+                "You get live URL per lead\n\n"
+                "Try: /scan dentist houston"
             )
         }
     )
-    updater.idle()
+ updater.idle()
 
 
 if __name__ == "__main__":
