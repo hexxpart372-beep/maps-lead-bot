@@ -246,19 +246,13 @@ def format_wa_link(phone):
 
 # ─── Pitch Generator ─────────────────────────────────────
 def generate_pitch(business_name, niche, city):
-    try:
-        prompt = f"""Write a WhatsApp cold outreach message to a {niche} business owner in {city}.
-
-Rules:
-- Maximum 3 sentences
-- First sentence: mention you found them on Google Maps
-- Second sentence: tell them you already built a free website preview for them
-- Third sentence: ask if you can send the link
-- Never say "follow up", "checking in", "just wanted"
-- Sound like a real person not a salesman
-- No emojis
-
-Write ONLY the message."""
+    import random
+    templates = [
+        f"Hi, I found {business_name} on Google Maps while searching for a {niche} in {city}. I noticed you don't have a website so I built a free preview for you. Can I send you the link?",
+        f"Hi, I came across {business_name} on Google Maps. You don't have a website listed so I went ahead and created a preview for free. Want me to send the link?",
+        f"Hi, I found your {niche} on Google Maps and built a free website preview for {business_name}. No commitment needed — want to see it first?",
+    ]
+    return random.choice(templates)
         
 
         response = groq_client.chat.completions.create(
