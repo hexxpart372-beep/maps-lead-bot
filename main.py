@@ -437,7 +437,7 @@ def build_html(business_name, niche, city, phone,
     niche_icon = icons.get(niche.lower(), "⭐")
     s_icons = ["✂️", "💆", "✨", "💅", "🌟"]
 
-        return f"""<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -902,7 +902,7 @@ def main():
             )
         }
     )
- updater.idle()
+updater.idle()
 
 
 if __name__ == "__main__":
