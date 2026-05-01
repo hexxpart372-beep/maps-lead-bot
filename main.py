@@ -902,7 +902,7 @@ def main():
             )
         }
     )
-updater.idle()
+    updater.idle()
 
 
 if __name__ == "__main__":
