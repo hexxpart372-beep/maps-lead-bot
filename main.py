@@ -706,27 +706,43 @@ def run_scan(bot, chat_id, niche, city, country_code="us"):
             send_telegram(bot, chat_id, pitch)
             time.sleep(2)
 
-            # MSG 6 — Build + auto deploy
-            send_telegram(bot, chat_id, "Building and deploying site...")
-            html = build_html(
-                name, niche, city, phone,
-                description=description,
-                hours=hours,
-                address=address
-            )
-            site_url = deploy_to_netlify(html, name)
-
-            if site_url:
-                send_telegram(bot, chat_id,
-                    f"SITE LIVE\n\n"
-                    f"{site_url}\n\n"
-                    f"Send this link with your pitch."
-                )
-            else:
-                send_telegram(bot, chat_id,
-                    "Deploy failed — retry with /redeploy"
-                )
-
+            # MSG 6 — Build and send HTML file
+send_telegram(bot, chat_id, "Building website...")
+html = build_html(
+    name, niche, city, phone,
+    description=description,
+    hours=hours,
+    address=address
+)
+safe = (
+    name.lower()
+    .replace(" ", "-")
+    .replace("&", "and")
+    .replace("'", "")
+    .replace(",", "")
+    .replace(".", "")[:35]
+)
+try:
+    import io
+    file_bytes = html.encode("utf-8")
+    file_obj = io.BytesIO(file_bytes)
+    file_obj.name = "index.html"
+    bot.send_document(
+        chat_id=chat_id,
+        document=file_obj,
+        filename="index.html",
+        caption=(
+            f"{name}\n\n"
+            f"1. Save this file\n"
+            f"2. Go to netlify.com/drop\n"
+            f"3. Upload index.html\n"
+            f"4. Rename site to: {safe}\n"
+            f"5. Copy URL and send to client"
+        )
+    )
+except Exception as e:
+    logger.error(f"File send error: {e}")
+    send_telegram(bot, chat_id, "File send failed — try again")
             now = datetime.now().strftime("%Y-%m-%d %H:%M")
             log_to_sheet([
                 now, name, niche, city, str(score),
