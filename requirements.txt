@@ -1,0 +1,7 @@
+python-telegram-bot==20.7
+groq
+gspread
+google-auth
+beautifulsoup4
+requests
+feedparser
