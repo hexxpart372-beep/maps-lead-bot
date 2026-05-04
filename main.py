@@ -172,20 +172,30 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @owner_only
 async def manual_scrape(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 Scraping all sources...")
+    await update.message.reply_text("🔍 Scraping all sources... give it a minute")
     try:
-        from scraper import scrape_youtube, scrape_nairaland, scrape_rss
+        from scraper import (
+            scrape_google_news, scrape_youtube, scrape_jiji,
+            scrape_naijahouses, scrape_nigeriapropertycentre, scrape_tonaton
+        )
 
+        gn = scrape_google_news()
         yt = scrape_youtube()
-        nl = scrape_nairaland()
-        rss = scrape_rss()
-        posts = yt + nl + rss
+        jj = scrape_jiji()
+        nh = scrape_naijahouses()
+        npc = scrape_nigeriapropertycentre()
+        tt = scrape_tonaton()
+
+        posts = gn + yt + jj + nh + npc + tt
 
         await update.message.reply_text(
             f"📡 *Source Breakdown:*\n"
-            f"YouTube: {len(yt)} posts\n"
-            f"Nairaland: {len(nl)} posts\n"
-            f"RSS: {len(rss)} posts\n"
+            f"Google News: {len(gn)}\n"
+            f"YouTube: {len(yt)}\n"
+            f"Jiji: {len(jj)}\n"
+            f"NaijaHouses: {len(nh)}\n"
+            f"NigeriaPropertyCentre: {len(npc)}\n"
+            f"Tonaton: {len(tt)}\n"
             f"─────────────\n"
             f"Total: {len(posts)} posts",
             parse_mode="Markdown"
@@ -209,6 +219,7 @@ async def manual_scrape(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     skipped += 1
             except Exception as e:
                 skipped += 1
+                logging.error(f"Classify error: {e}")
 
         await update.message.reply_text(
             f"✅ Done!\n"
@@ -218,7 +229,7 @@ async def manual_scrape(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         await update.message.reply_text(f"❌ Failed: {str(e)}")
-
+        
 @owner_only
 async def test_network(update: Update, context: ContextTypes.DEFAULT_TYPE):
     import requests
