@@ -219,6 +219,24 @@ async def manual_scrape(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Failed: {str(e)}")
 
+@owner_only
+async def test_network(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    import requests
+    results = []
+    urls = [
+        "https://www.google.com",
+        "https://www.nairaland.com",
+        "https://www.propertypro.ng/feed",
+        "https://www.googleapis.com"
+    ]
+    for url in urls:
+        try:
+            r = requests.get(url, timeout=10)
+            results.append(f"✅ {url} — {r.status_code}")
+        except Exception as e:
+            results.append(f"❌ {url} — {str(e)[:50]}")
+    await update.message.reply_text("\n".join(results))
+
 async def auto_scheduler(context: ContextTypes.DEFAULT_TYPE):
     try:
         posts = run_all_scrapers()
@@ -259,7 +277,8 @@ def main():
     app.add_handler(CommandHandler("matchagent", match_agent))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("scrape", manual_scrape))
-
+    app.add_handler(CommandHandler("testnet", test_network))
+    
     app.job_queue.run_repeating(
         auto_scheduler,
         interval=Config.SCRAPE_INTERVAL_MINUTES * 60,
