@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -128,14 +127,21 @@ async def add_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "budget": args[3] if len(args) > 3 else "Not specified"
     })
     await update.message.reply_text(
-        f"✅ Agent added!\nID: {agent_id}\nName: {args[0]}\nPhone: {args[1]}\nAreas: {args[2]}"
+        f"✅ Agent added!\n"
+        f"ID: {agent_id}\n"
+        f"Name: {args[0]}\n"
+        f"Phone: {args[1]}\n"
+        f"Areas: {args[2]}"
     )
 
 @owner_only
 async def match_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
-        await update.message.reply_text("Usage: /matchagent [location]\nExample: /matchagent Lagos")
+        await update.message.reply_text(
+            "Usage: /matchagent [location]\n"
+            "Example: /matchagent Lagos"
+        )
         return
     location = args[0].title()
     agents = get_all_agents()
@@ -166,23 +172,34 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @owner_only
 async def manual_scrape(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 Scraping now... give it a minute")
+    await update.message.reply_text("🔍 Scraping all sources... give it a minute")
     try:
         posts = run_all_scrapers()
         new_count = 0
+        skipped = 0
         for post in posts:
-            result = classify_lead(post["text"], post["source"])
-            if result.get("is_valid") and result.get("score", 0) >= 4:
-                save_lead({
-                    "type": result["type"],
-                    "location": result["location"],
-                    "intent": result["intent"],
-                    "source": post["source"],
-                    "score": result["score"]
-                })
-                new_count += 1
+            try:
+                result = classify_lead(post["text"], post["source"])
+                if result.get("is_valid") and result.get("score", 0) >= 2:
+                    save_lead({
+                        "type": result["type"],
+                        "location": result["location"],
+                        "intent": result["intent"],
+                        "source": post["source"],
+                        "score": result["score"]
+                    })
+                    new_count += 1
+                else:
+                    skipped += 1
+            except Exception as e:
+                skipped += 1
+                logging.error(f"Classify error: {e}")
         await update.message.reply_text(
-            f"✅ Done!\n{new_count} new leads saved\nUse /newleads to view"
+            f"✅ Scrape complete!\n\n"
+            f"📥 Raw posts collected: {len(posts)}\n"
+            f"✅ Leads saved: {new_count}\n"
+            f"⏭ Skipped: {skipped}\n\n"
+            f"Use /newleads to view"
         )
     except Exception as e:
         await update.message.reply_text(f"❌ Scrape failed: {str(e)}")
@@ -192,20 +209,25 @@ async def auto_scheduler(context: ContextTypes.DEFAULT_TYPE):
         posts = run_all_scrapers()
         new_count = 0
         for post in posts:
-            result = classify_lead(post["text"], post["source"])
-            if result.get("is_valid") and result.get("score", 0) >= 4:
-                save_lead({
-                    "type": result["type"],
-                    "location": result["location"],
-                    "intent": result["intent"],
-                    "source": post["source"],
-                    "score": result["score"]
-                })
-                new_count += 1
+            try:
+                result = classify_lead(post["text"], post["source"])
+                if result.get("is_valid") and result.get("score", 0) >= 2:
+                    save_lead({
+                        "type": result["type"],
+                        "location": result["location"],
+                        "intent": result["intent"],
+                        "source": post["source"],
+                        "score": result["score"]
+                    })
+                    new_count += 1
+            except Exception as e:
+                logging.error(f"Auto classify error: {e}")
         if new_count > 0:
             await context.bot.send_message(
                 chat_id=Config.OWNER_ID,
-                text=f"🔥 Auto scrape done\n{new_count} new leads saved\nUse /newleads to view"
+                text=f"🔥 Auto scrape done\n\n"
+                     f"✅ {new_count} new leads saved\n"
+                     f"Use /newleads to view"
             )
     except Exception as e:
         logging.error(f"Auto scrape error: {e}")
@@ -223,7 +245,6 @@ def main():
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("scrape", manual_scrape))
 
-    # Use built-in job queue for auto scraping
     app.job_queue.run_repeating(
         auto_scheduler,
         interval=Config.SCRAPE_INTERVAL_MINUTES * 60,
