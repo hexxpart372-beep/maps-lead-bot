@@ -172,9 +172,25 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @owner_only
 async def manual_scrape(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 Scraping all sources... give it a minute")
+    await update.message.reply_text("🔍 Scraping all sources...")
     try:
-        posts = run_all_scrapers()
+        from scraper import scrape_youtube, scrape_nairaland, scrape_rss
+
+        yt = scrape_youtube()
+        nl = scrape_nairaland()
+        rss = scrape_rss()
+        posts = yt + nl + rss
+
+        await update.message.reply_text(
+            f"📡 *Source Breakdown:*\n"
+            f"YouTube: {len(yt)} posts\n"
+            f"Nairaland: {len(nl)} posts\n"
+            f"RSS: {len(rss)} posts\n"
+            f"─────────────\n"
+            f"Total: {len(posts)} posts",
+            parse_mode="Markdown"
+        )
+
         new_count = 0
         skipped = 0
         for post in posts:
@@ -193,16 +209,15 @@ async def manual_scrape(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     skipped += 1
             except Exception as e:
                 skipped += 1
-                logging.error(f"Classify error: {e}")
+
         await update.message.reply_text(
-            f"✅ Scrape complete!\n\n"
-            f"📥 Raw posts collected: {len(posts)}\n"
-            f"✅ Leads saved: {new_count}\n"
-            f"⏭ Skipped: {skipped}\n\n"
+            f"✅ Done!\n"
+            f"Leads saved: {new_count}\n"
+            f"Skipped: {skipped}\n\n"
             f"Use /newleads to view"
         )
     except Exception as e:
-        await update.message.reply_text(f"❌ Scrape failed: {str(e)}")
+        await update.message.reply_text(f"❌ Failed: {str(e)}")
 
 async def auto_scheduler(context: ContextTypes.DEFAULT_TYPE):
     try:
