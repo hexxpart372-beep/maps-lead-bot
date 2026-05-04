@@ -6,11 +6,10 @@ from config import Config
 from sheets import (
     get_new_leads, save_agent, get_all_agents,
     save_pack, mark_leads_packed, get_stats,
-    get_leads_by_location
+    get_leads_by_location, save_lead
 )
 from scraper import run_all_scrapers
 from classifier import classify_lead
-from sheets import save_lead
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -38,6 +37,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/scrape — Run manual scrape now",
         parse_mode="Markdown"
     )
+
+@owner_only
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await start(update, context)
 
 @owner_only
 async def new_leads(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -163,7 +166,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @owner_only
 async def manual_scrape(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 Scraping now... this may take a minute")
+    await update.message.reply_text("🔍 Scraping now... give it a minute")
     try:
         posts = run_all_scrapers()
         new_count = 0
@@ -179,40 +182,39 @@ async def manual_scrape(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 })
                 new_count += 1
         await update.message.reply_text(
-            f"✅ Scrape done!\n{new_count} new leads saved\nUse /newleads to view"
+            f"✅ Done!\n{new_count} new leads saved\nUse /newleads to view"
         )
     except Exception as e:
         await update.message.reply_text(f"❌ Scrape failed: {str(e)}")
 
-async def auto_scheduler(app):
-    while True:
-        await asyncio.sleep(Config.SCRAPE_INTERVAL_MINUTES * 60)
-        try:
-            posts = run_all_scrapers()
-            new_count = 0
-            for post in posts:
-                result = classify_lead(post["text"], post["source"])
-                if result.get("is_valid") and result.get("score", 0) >= 4:
-                    save_lead({
-                        "type": result["type"],
-                        "location": result["location"],
-                        "intent": result["intent"],
-                        "source": post["source"],
-                        "score": result["score"]
-                    })
-                    new_count += 1
-            if new_count > 0 and Config.OWNER_ID:
-                await app.bot.send_message(
-                    chat_id=Config.OWNER_ID,
-                    text=f"🔥 Auto scrape done\n{new_count} new leads saved\nUse /newleads to view"
-                )
-        except Exception as e:
-            logging.error(f"Auto scrape error: {e}")
+async def auto_scheduler(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        posts = run_all_scrapers()
+        new_count = 0
+        for post in posts:
+            result = classify_lead(post["text"], post["source"])
+            if result.get("is_valid") and result.get("score", 0) >= 4:
+                save_lead({
+                    "type": result["type"],
+                    "location": result["location"],
+                    "intent": result["intent"],
+                    "source": post["source"],
+                    "score": result["score"]
+                })
+                new_count += 1
+        if new_count > 0:
+            await context.bot.send_message(
+                chat_id=Config.OWNER_ID,
+                text=f"🔥 Auto scrape done\n{new_count} new leads saved\nUse /newleads to view"
+            )
+    except Exception as e:
+        logging.error(f"Auto scrape error: {e}")
 
-async def main():
+def main():
     app = Application.builder().token(Config.TELEGRAM_BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", start))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("newleads", new_leads))
     app.add_handler(CommandHandler("createpack", create_pack))
     app.add_handler(CommandHandler("agents", list_agents))
@@ -220,8 +222,15 @@ async def main():
     app.add_handler(CommandHandler("matchagent", match_agent))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("scrape", manual_scrape))
-    asyncio.create_task(auto_scheduler(app))
-    await app.run_polling(drop_pending_updates=True)
+
+    # Use built-in job queue for auto scraping
+    app.job_queue.run_repeating(
+        auto_scheduler,
+        interval=Config.SCRAPE_INTERVAL_MINUTES * 60,
+        first=10
+    )
+
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
