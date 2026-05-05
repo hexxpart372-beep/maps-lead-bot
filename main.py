@@ -248,6 +248,20 @@ async def test_network(update: Update, context: ContextTypes.DEFAULT_TYPE):
             results.append(f"❌ {url} — {str(e)[:50]}")
     await update.message.reply_text("\n".join(results))
 
+@owner_only
+async def force_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        lead_id = save_lead({
+            "type": "Seller",
+            "location": "Lagos",
+            "intent": "Test lead - property for sale in Lagos",
+            "source": "Manual Test",
+            "score": 3
+        })
+        await update.message.reply_text(f"✅ Force save worked! Lead ID: {lead_id}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Save failed: {str(e)}")
+
 async def auto_scheduler(context: ContextTypes.DEFAULT_TYPE):
     try:
         posts = run_all_scrapers()
@@ -289,6 +303,7 @@ def main():
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("scrape", manual_scrape))
     app.add_handler(CommandHandler("testnet", test_network))
+    app.add_handler(CommandHandler("forcetest", force_test))
     
     app.job_queue.run_repeating(
         auto_scheduler,
