@@ -1,3 +1,5 @@
+import os
+import json
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
@@ -9,10 +11,8 @@ SCOPES = [
 ]
 
 def get_client():
-    creds = Credentials.from_service_account_info(
-        Config.GOOGLE_SERVICE_ACCOUNT_INFO,
-        scopes=SCOPES
-    )
+    info = Config.get_service_account_info()
+    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
     client = gspread.authorize(creds)
     return client.open_by_key(Config.GOOGLE_SHEET_ID)
 
@@ -38,10 +38,10 @@ def save_lead(lead: dict):
     ws.append_row([
         lead_id,
         lead.get("type", "Unknown"),
-        lead.get("location", "Unknown"),
-        lead.get("intent", ""),
+        lead.get("location", "Nigeria"),
+        lead.get("intent", "")[:200],
         lead.get("source", ""),
-        lead.get("score", 0),
+        lead.get("score", 2),
         datetime.now().strftime("%Y-%m-%d %H:%M"),
         "New",
         ""
@@ -52,7 +52,8 @@ def get_new_leads(limit=20):
     book = ensure_sheets()
     ws = book.worksheet("Leads")
     rows = ws.get_all_records()
-    return [r for r in rows if r.get("Status") == "New"][-limit:]
+    result = [r for r in rows if r.get("Status") == "New"]
+    return result[-limit:]
 
 def get_leads_by_location(location: str):
     book = ensure_sheets()
@@ -60,7 +61,7 @@ def get_leads_by_location(location: str):
     rows = ws.get_all_records()
     return [
         r for r in rows
-        if location.lower() in r.get("Location","").lower()
+        if location.lower() in r.get("Location", "").lower()
         and r.get("Status") == "New"
     ]
 
@@ -71,10 +72,10 @@ def save_agent(agent: dict):
     agent_id = f"A{len(rows):03d}"
     ws.append_row([
         agent_id,
-        agent.get("name",""),
-        agent.get("phone",""),
-        agent.get("areas",""),
-        agent.get("budget",""),
+        agent.get("name", ""),
+        agent.get("phone", ""),
+        agent.get("areas", ""),
+        agent.get("budget", "Not specified"),
         datetime.now().strftime("%Y-%m-%d"),
         0
     ])
@@ -92,9 +93,9 @@ def save_pack(pack: dict):
     pack_id = f"P{len(rows):03d}"
     ws.append_row([
         pack_id,
-        pack.get("name",""),
-        pack.get("type",""),
-        pack.get("location",""),
+        pack.get("name", ""),
+        pack.get("type", ""),
+        pack.get("location", ""),
         pack.get("lead_count", 0),
         datetime.now().strftime("%Y-%m-%d %H:%M"),
         "Ready",
@@ -122,4 +123,4 @@ def get_stats():
         "packed_leads": len([l for l in leads if l.get("Status") == "Packed"]),
         "total_agents": len(agents),
         "total_packs": len(packs)
-  }
+    }
