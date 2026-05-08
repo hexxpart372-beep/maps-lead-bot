@@ -10,17 +10,33 @@ class Config:
     SCRAPE_INTERVAL_MINUTES = int(os.environ.get("SCRAPE_INTERVAL_MINUTES", "60"))
 
     @staticmethod
-    def get_service_account_info():
-        raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "{}")
-        # Fix newlines mangled by Railway
-        raw = raw.strip()
-        if raw.startswith('"') and raw.endswith('"'):
-            raw = raw[1:-1]
-        raw = raw.replace("\\n", "\n").replace('\\"', '"')
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid GOOGLE_SERVICE_ACCOUNT_JSON: {e}")
+def get_service_account_info():
+    import re
+    raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "{}")
+    raw = raw.strip()
+    
+    # Remove outer quotes if Railway wrapped it
+    if raw.startswith('"') and raw.endswith('"'):
+        raw = raw[1:-1]
+    
+    # Fix the private key newlines
+    def fix_private_key(match):
+        key_content = match.group(0)
+        key_content = key_content.replace("\\n", "\n")
+        return key_content
+    
+    # Replace literal \n with real newlines only inside private_key value
+    raw = re.sub(
+        r'"private_key"\s*:\s*"[^"]*"',
+        fix_private_key,
+        raw
+    )
+    
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid GOOGLE_SERVICE_ACCOUNT_JSON: {e}")
+        
 
     SELLER_KEYWORDS = [
         "for sale", "selling", "sell", "distress", "urgent sale",
