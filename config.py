@@ -11,16 +11,29 @@ class Config:
     SCRAPE_INTERVAL_MINUTES = int(os.environ.get("SCRAPE_INTERVAL_MINUTES", "60"))
 
     @staticmethod
-    def get_service_account_info():
-        raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "{}")
-        raw = raw.strip()
-        if raw.startswith('"') and raw.endswith('"'):
-            raw = raw[1:-1]
-        raw = raw.replace("\\n", "\n")
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid GOOGLE_SERVICE_ACCOUNT_JSON: {e}")
+def get_service_account_info():
+    raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "{}")
+    raw = raw.strip()
+    
+    # Remove outer quotes if present
+    if raw.startswith('"') and raw.endswith('"'):
+        raw = raw[1:-1]
+    
+    # Fix all escape sequences
+    raw = raw.replace("\\n", "\n")
+    raw = raw.replace("\\r", "")
+    raw = raw.replace("\\t", "")
+    
+    # Find and fix the private key specifically
+    import re
+    def fix_key(m):
+        return m.group(0).replace("\n", "\\n")
+    
+    # Parse with strict=False to allow control characters
+    try:
+        return json.loads(raw, strict=False)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid GOOGLE_SERVICE_ACCOUNT_JSON: {e}")
 
     SELLER_KEYWORDS = [
         "for sale", "selling", "sell", "distress", "urgent sale",
