@@ -9,31 +9,47 @@ class Config:
     OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
     SCRAPE_INTERVAL_MINUTES = int(os.environ.get("SCRAPE_INTERVAL_MINUTES", "60"))
 
-    _raw_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "{}")
-    try:
-        GOOGLE_SERVICE_ACCOUNT_INFO = json.loads(_raw_json)
-    except json.JSONDecodeError:
-        GOOGLE_SERVICE_ACCOUNT_INFO = {}
+    @staticmethod
+    def get_service_account_info():
+        raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "{}")
+        # Fix newlines mangled by Railway
+        raw = raw.strip()
+        if raw.startswith('"') and raw.endswith('"'):
+            raw = raw[1:-1]
+        raw = raw.replace("\\n", "\n").replace('\\"', '"')
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid GOOGLE_SERVICE_ACCOUNT_JSON: {e}")
 
     SELLER_KEYWORDS = [
-        "want to sell my house", "selling my property",
-        "urgent sale", "distress sale", "relocating and selling",
+        "for sale", "selling", "sell", "distress", "urgent sale",
+        "relocating", "owner selling", "landlord", "lease",
         "property for sale", "land for sale", "house for sale",
-        "sell my land", "duplex for sale", "flat for sale",
-        "bungalow for sale", "plot for sale"
+        "flat for sale", "duplex for sale", "bungalow for sale",
+        "plot for sale", "sell my property", "selling my house",
+        "selling my land", "building for sale", "shop for sale",
+        "warehouse for sale", "office space for sale"
     ]
 
     BUYER_KEYWORDS = [
-        "looking for apartment in", "need 2 bedroom in",
-        "house for rent in", "looking to buy property",
-        "need a flat in", "looking for house in",
-        "short let needed", "3 bedroom needed",
-        "self contain needed", "mini flat needed"
+        "for rent", "looking for", "need", "want", "seeking",
+        "searching", "require", "short let", "to let",
+        "looking for apartment", "need 2 bedroom", "need 3 bedroom",
+        "need a flat", "looking for house", "looking for land",
+        "want to buy land", "looking to buy property",
+        "need affordable apartment", "self contain", "mini flat",
+        "room and parlour", "furnished apartment",
+        "serviced apartment", "studio apartment", "boys quarter"
     ]
 
-    TARGET_LOCATIONS = [
-        "Lagos", "Abuja", "Ibadan", "Port Harcourt",
-        "Benin City", "Enugu", "Owerri", "Abeokuta",
-        "Lekki", "Ajah", "Yaba", "Surulere", "Ikeja",
-        "Victoria Island", "Ikoyi", "Ogun"
-]
+    JOB_KEYWORDS = [
+        "hiring", "vacancy", "job", "recruit", "apply",
+        "career", "employment", "staff needed", "worker needed",
+        "we are hiring", "job vacancy", "job opening",
+        "now hiring", "urgent vacancy", "talents needed",
+        "job opportunity", "full time job", "part time job",
+        "remote job Nigeria", "work from home Nigeria",
+        "looking for job", "seeking employment", "need a job",
+        "available for hire", "open to work"
+    ]
