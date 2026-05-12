@@ -12,28 +12,20 @@ class Config:
 
     @staticmethod
 def get_service_account_info():
-    raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "{}")
-    raw = raw.strip()
-    
-    # Remove outer quotes if present
-    if raw.startswith('"') and raw.endswith('"'):
-        raw = raw[1:-1]
-    
-    # Fix all escape sequences
-    raw = raw.replace("\\n", "\n")
-    raw = raw.replace("\\r", "")
-    raw = raw.replace("\\t", "")
-    
-    # Find and fix the private key specifically
-    import re
-    def fix_key(m):
-        return m.group(0).replace("\n", "\\n")
-    
-    # Parse with strict=False to allow control characters
-    try:
-        return json.loads(raw, strict=False)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid GOOGLE_SERVICE_ACCOUNT_JSON: {e}")
+    private_key = os.environ.get("GCP_PRIVATE_KEY", "")
+    private_key = private_key.replace("\\n", "\n")
+    return {
+        "type": "service_account",
+        "project_id": os.environ.get("GCP_PROJECT_ID", ""),
+        "private_key_id": "",
+        "private_key": private_key,
+        "client_email": os.environ.get("GCP_CLIENT_EMAIL", ""),
+        "client_id": "",
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+        "client_x509_cert_url": ""
+    }
 
     SELLER_KEYWORDS = [
         "for sale", "selling", "sell", "distress", "urgent sale",
